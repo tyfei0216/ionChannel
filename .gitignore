@@ -1,0 +1,5 @@
+models/
+results/
+runs/
+__pycache__/
+*.txt
