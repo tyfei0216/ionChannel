@@ -12,6 +12,8 @@ import re
 import pytorch_lightning as L 
 tqdm.pandas()
 
+
+
 def parseline(line):
     try:
         line = line.decode("utf-8").strip()
