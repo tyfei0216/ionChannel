@@ -1,5 +1,6 @@
-models/
-results/
+checkpoints/
+lightning_logs/
 runs/
+temp/
 __pycache__/
 *.txt
