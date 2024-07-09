@@ -3,4 +3,8 @@ lightning_logs/
 runs/
 temp/
 __pycache__/
+tb_logs/ 
+*.yaml 
+*.pt
 *.txt
+ckpts/
