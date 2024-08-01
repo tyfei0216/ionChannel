@@ -1,56 +1,58 @@
-import re 
-import pandas as pd
+import re
 
+import pandas as pd
 
 re1 = re.compile(r"[-*\s]")
 re2 = re.compile(r"[-* Xx.\s]")
 re3 = re.compile(r"^[ACDEFGHIKLMNPQRSTVWYacdefghiklmnpqrstvwyXx -*.]*$")
 re4 = re.compile(r"[^ACDEFGHIKLMNPQRSTVWYacdefghiklmnpqrstvwy]")
 
+
 def parseline(line, remove="all"):
     try:
         if isinstance(line, bytes):
             line = line.decode("utf-8").strip()
     except:
-        return None 
+        return None
     if line.startswith(">"):
-        return line 
+        return line
     if remove == "all":
-        line = re4.sub("", line)  
+        line = re4.sub("", line)
     elif remove == "whitespaces":
-        line = re1.sub("", line )
+        line = re1.sub("", line)
     elif remove == "none":
-        pass 
+        pass
     else:
         raise NotImplementedError
-    return line 
+    return line
+
 
 # inspired by esm.data.readfasta
 def readFasta(path, to_upper=True, remove="whitespaces", truclength=1500, checkseq=re3):
-    
+
     if checkseq is not None:
-        assert(isinstance(checkseq, re.Pattern))
-    
+        assert isinstance(checkseq, re.Pattern)
+
     with open(path, "rb") as f:
         line = None
-        seq = []  
+        seq = []
         for t in f:
             t = parseline(t, remove=remove)
             if t is None:
-                line = None 
+                line = None
                 continue
-            
+
             if line is None:
                 if t.startswith(">"):
-                    line = t[1:] 
+                    line = t[1:]
                 continue
-            
+
             if t.startswith(">"):
                 s = "".join(seq)
-                seq = [] 
+                seq = []
                 if len(s) > 0:
                     if to_upper:
-                        s = s.upper() 
+                        s = s.upper()
                     if truclength is not None:
                         s = s[:truclength]
                     yield line, s
@@ -60,28 +62,34 @@ def readFasta(path, to_upper=True, remove="whitespaces", truclength=1500, checks
             if checkseq is not None:
                 if not checkseq.match(t):
                     line = None
-                    seq = [] 
+                    seq = []
                     continue
 
             seq.append(t)
 
 
-def readNCBICsv(path, to_upper=True, remove="whitespaces", truclength=1500, checkseq=re3):
+def readNCBICsv(
+    path, to_upper=True, remove="whitespaces", truclength=1500, checkseq=re3
+):
     if checkseq is not None:
-        assert(isinstance(checkseq, re.Pattern))
+        assert isinstance(checkseq, re.Pattern)
 
-    entries = [] 
-    df = pd.read_csv(path, header=0) 
+    entries = []
+    df = pd.read_csv(path, header=0)
     for i, r in df.iterrows():
         if len(str(r["translation"])) > 5:
             s = parseline(str(r["translation"]), remove=remove)
             if checkseq is not None:
                 if not checkseq.match(s):
-                    continue 
+                    continue
             if to_upper:
                 s = s.upper()
             if truclength is not None:
                 s = s[:truclength]
-            entries.append((r["protein_id"], s))
+            if "definition" in df.columns:
+                defination = r["definition"]
+            else:
+                defination = ""
+            entries.append(((r["protein_id"], defination, r["organism"]), s))
 
     return entries

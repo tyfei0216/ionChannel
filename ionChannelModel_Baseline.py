@@ -6,7 +6,7 @@ import sys
 import torch
 
 torch.set_float32_matmul_precision("medium")  # make lightning happy
-# sys.path.append("/home/tyfei/fun/utils")
+sys.path.append("/home/tyfei/ion_channel")
 
 import argparse
 
@@ -23,10 +23,11 @@ def parseArgs():
     return args
 
 
-def runesm2():
+def runesm3():
     args = parseArgs()
     path = args.path
 
+    # path = "/home/tyfei/ionChannel/ckptsesm3/unfix3/"
     # strategy = L.strategies.DeepSpeedStrategy()
     k = 2
     with open(os.path.join(path, "config.json"), "r") as f:
@@ -48,60 +49,108 @@ def runesm2():
     #     )
     logger = TensorBoardLogger("tb_logs", name="ion_test")
     trainer = L.Trainer(
+        # strategy="FSDP",
         logger=logger,
         accelerator="gpu",
-        devices=[0, 1],
+        devices=[1],
         max_epochs=configs["train"]["epoch"],
         accumulate_grad_batches=configs["train"]["accumulate_grad_batches"],
         callbacks=[checkpoint_callback],
     )
 
-    import esm
+    import random
 
     import VirusDataset
 
-    model, alphabet = esm.pretrained.esm2_t12_35M_UR50D()
-    batch_converter = alphabet.get_batch_converter()
+    # model = ESM3.from_pretrained("esm3_sm_open_v1")
+    # model, alphabet = esm.pretrained.esm2_t12_35M_UR50D()
+    # batch_converter = alphabet.get_batch_converter()
     # X1, y, X2 = VirusDataset.readVirusSequences(trunc=998)
-
-    import random
 
     random.seed(configs["train"]["seed"])
     torch.manual_seed(configs["train"]["seed"])
-    # newX1 = [(y, x[1]) for x, y in zip(X1, y)]
-    # _, _, X1 = batch_converter(X1)
-    # _, _, X2 = batch_converter(X2)
-    # trainset = VirusDataset.SeqDataset2(
-    #     X1, y, X2[random.sample(range(X2.shape[0]), X1.shape[0])]
-    # )
-    # testset = VirusDataset.TestDataset(X2)
-    # ds = VirusDataset.SeqdataModule(trainset=trainset, testset=testset, batch_size=5)
-    ds = VirusDataset.SeqdataModule(batch_size=configs["train"]["batch_size"])
+
+    import pickle
+
+    data1 = []
+    label = []
+    data2 = []
+    lens = []
+
+    for i in configs["dataset"]["pos"]:
+        with open(
+            i,
+            "rb",
+        ) as f:
+            data = pickle.load(f)
+            for j in data:
+                if "strcture_t" in j:
+                    j["structure_t"] = j.pop("strcture_t")
+        data1.extend(data)
+        label.extend([1] * len(data))
+
+    for i in configs["dataset"]["neg"]:
+        with open(
+            i,
+            "rb",
+        ) as f:
+            data = pickle.load(f)
+            for j in data:
+                if "strcture_t" in j:
+                    j["structure_t"] = j.pop("strcture_t")
+        data1.extend(data)
+        label.extend([0] * len(data))
+
+    for i in configs["dataset"]["test"]:
+        with open(
+            i,
+            "rb",
+        ) as f:
+            data = pickle.load(f)
+            for j in data:
+                if "strcture_t" in j:
+                    j["structure_t"] = j.pop("strcture_t")
+                lens.append(len(j["ori_seq"]))
+        data2.extend(data)
+
+    step_points = configs["augmentation"]["step_points"]
+    crop = configs["augmentation"]["crop"]
+    maskp = [
+        (i, j)
+        for i, j in zip(
+            configs["augmentation"]["maskp"], configs["augmentation"]["maskpc"]
+        )
+    ]
+    # print(crop)
+    aug = VirusDataset.DataAugmentation(step_points, maskp, crop, lens)
+
+    ds1 = VirusDataset.ESM3MultiTrackDataset(data1, data2, label, augment=aug)
+    ds2 = VirusDataset.ESM3MultiTrackDatasetTEST(data2)
+
+    ds = VirusDataset.ESM3datamodule(ds1, ds2)
 
     import models
 
     # model, alphabet = esm.pretrained.esm2_t12_35M_UR50D()
     # batch_converter = alphabet.get_batch_converter()
-
-    model = models.fixParameters(model, unfix=configs["pretrain_model"]["unfix_layers"])
-    model = models.addlora(
-        model,
-        layers=configs["pretrain_model"]["add_lora"],
-        ranks=configs["pretrain_model"]["rank"],
-        alphas=configs["pretrain_model"]["alpha"],
-    )
-
-    clsmodel = models.ionclf(
-        model,
-        step_lambda=configs["model"]["lambda_adapt"],
-        lamb=configs["model"]["lambda_ini"],
-        max_lambda=configs["model"]["max_lambda"],
-        step=configs["model"]["lambda_step"],
-        p=configs["model"]["dropout"],
-        thres=configs["model"]["lambda_thres"],
-        lr=configs["model"]["lr"],
-    )
-    # newmodel = esm.pretrained.esm2_t12_35M_UR50D()
+    # model = models.fixParameters(model, unfix=configs["pretrain_model"]["unfix_layers"])
+    # model = models.addlora(
+    #     model,
+    #     layers=configs["pretrain_model"]["add_lora"],
+    #     ranks=configs["pretrain_model"]["rank"],
+    #     alphas=configs["pretrain_model"]["alpha"],
+    # )
+    # clsmodel = models.IonclfESM3(
+    #     model,
+    #     step_lambda=configs["model"]["lambda_adapt"],
+    #     lamb=configs["model"]["lambda_ini"],
+    #     max_lambda=configs["model"]["max_lambda"],
+    #     step=configs["model"]["lambda_step"],
+    #     p=configs["model"]["dropout"],
+    #     thres=configs["model"]["lambda_thres"],
+    #     lr=configs["model"]["lr"],
+    # )
+    clsmodel = models.IonclfBaseline()
 
     # from functools import reduce
 
@@ -127,3 +176,7 @@ def runesm2():
     torch.save(clsmodel.state_dict(), path + "parms.pt")
     # trainer.save_checkpoint("example.ckpt")
     # torch.save(clsmodel, "./train624.pt")
+
+
+if __name__ == "__main__":
+    runesm3()

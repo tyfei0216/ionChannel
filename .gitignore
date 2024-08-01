@@ -8,3 +8,6 @@ tb_logs/
 *.pt
 *.txt
 ckpts/
+ckptsbaseline/
+ckptsesm3/
+structure_temp/
