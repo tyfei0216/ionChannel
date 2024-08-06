@@ -5,7 +5,6 @@ import numpy as np
 import pytorch_lightning as L
 import torch
 from esm.utils.constants import esm3 as C
-from pytorch_lightning.utilities.types import TRAIN_DATALOADERS
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.sampler import SubsetRandomSampler
 
@@ -21,7 +20,7 @@ class MyDataLoader(DataLoader):
 
     def step(self):
         if self.step_ds:
-            self.ds.step()
+            self.ds.newEpoch()
 
     def __iter__(self):
         self.epoch += 1
@@ -235,6 +234,145 @@ class ESM3BaseDataset(Dataset):
         return sample
 
 
+class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
+
+    def __init__(
+        self,
+        data1,
+        data2,
+        data3,
+        augment: DataAugmentation = None,
+        pos_neg_sample=None,
+        tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
+    ) -> None:
+        """_summary_
+
+        Args:
+            data1 (_type_): positive data
+            data2 (_type_): negative data
+            data3 (_type_): test data for domain adaptation
+            augment (DataAugmentation, optional): _description_. Defaults to None.
+            tracks (list, optional): _description_. Defaults to ["seq_t", "structure_t", "sasa_t", "second_t"].
+        """
+        super().__init__(tracks=tracks)
+        self.data1 = data1
+        self.data2 = data2
+        self.data3 = data3
+        self.aug = augment
+        self.iters = 0
+        self.data1order = []
+        self.data2order = []
+        self.data3order = np.arange(len(data3))
+        for i in data1:
+            self.data1order.append(np.arange(len(i)))
+        for i in data2:
+            self.data2order.append(np.arange(len(i)))
+        self.ifaug = False
+        if pos_neg_sample is not None:
+            self.pos_neg_sample = pos_neg_sample
+        else:
+            self.pos_neg_sample = [[], []]
+            for i in self.data1:
+                self.pos_neg_sample[0].append(len(i))
+            for i in self.data2:
+                self.pos_neg_sample[1].append(len(i))
+
+        self._sample = True
+        # self.tracks = tracks
+
+    @property
+    def sample(self):
+        return self._sample
+
+    @sample.setter
+    def sample(self, v: bool):
+        assert isinstance(v, bool)
+        self._sample = v
+
+    def __len__(self):
+        if self._sample:
+            t = 0
+            for i in self.pos_neg_sample:
+                for j in i:
+                    t += j
+            return t
+        else:
+            t = 0
+            for i in self.data1:
+                t += len(i)
+            for i in self.data2:
+                t += len(i)
+            return t
+
+    def newEpoch(self):
+        for i in [self.data1order, self.data2order]:
+            for j in i:
+                random.shuffle(j)
+        random.shuffle(self.data3order)
+
+    def getOrigin(self):
+        ret = []
+        for i in range(len(self)):
+            t, _ = self._getitemx1(i)
+            ret.append(t["origin"])
+        return ret
+
+    def _getitemx1(self, idx):
+        if self.sample:
+            for i in range(len(self.pos_neg_sample[0])):
+                if idx - self.pos_neg_sample[0][i] < 0:
+                    return (
+                        self.data1[i][
+                            self.data1order[i][idx % len(self.data1order[i])]
+                        ],
+                        1,
+                    )
+                else:
+                    idx -= self.pos_neg_sample[0][i]
+            for i in range(len(self.pos_neg_sample[1])):
+                if idx - self.pos_neg_sample[1][i] < 0:
+                    return (
+                        self.data2[i][
+                            self.data2order[i][idx % len(self.data2order[i])]
+                        ],
+                        0,
+                    )
+                else:
+                    idx -= self.pos_neg_sample[1][i]
+        else:
+            for i in self.data1:
+                if idx - len(i) < 0:
+                    return i[idx], 1
+                else:
+                    idx -= len(i)
+            for i in self.data2:
+                if idx - len(i) < 0:
+                    return i[idx], 0
+                else:
+                    idx -= len(i)
+        raise KeyError
+
+    def _getitemx2(self, idx):
+        return self.data3[self.data3order[idx % len(self.data3)]]
+
+    def __getitem__(self, idx):
+        x1 = {}
+        x2 = {}
+        t1, label = self._getitemx1(idx)
+        t2 = self._getitemx2(idx)
+        for i in self.tracks:
+            x1[i] = t1[i]
+            x2[i] = t2[i]
+
+        if self.aug is not None and self.ifaug:
+            maskp, crop = self.aug.getAugmentation(
+                len(x1[self.tracks[0]]), self.step_cnt
+            )
+            x1 = self._augmentsample(x1, maskp, crop)
+
+        return x1, torch.tensor([label]), x2
+
+
 class ESM3MultiTrackDataset(ESM3BaseDataset):
     def __init__(
         self,
@@ -243,6 +381,7 @@ class ESM3MultiTrackDataset(ESM3BaseDataset):
         label,
         augment: DataAugmentation = None,
         tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
+        # origin = {0:""},
     ) -> None:
         super().__init__(tracks=tracks)
         self.data1 = data1
@@ -258,9 +397,12 @@ class ESM3MultiTrackDataset(ESM3BaseDataset):
     def __len__(self):
         return len(self.data1)
 
-    def step(self):
+    def newEpoch(self):
         random.shuffle(self.data2order)
-        super().step()
+
+    # def step(self):
+    # random.shuffle(self.data2order)
+    # super().step()
 
     def __getitem__(self, idx):
         x1 = {}
@@ -306,6 +448,111 @@ class ESM3MultiTrackDatasetTEST(ESM3BaseDataset):
         return x1
 
 
+class ESM3BalancedDataModule(L.LightningDataModule):
+    def __init__(
+        self,
+        data1,
+        data2,
+        data3,
+        batch_size=1,
+        pos_neg_train=None,
+        pos_neg_val=None,
+        train_test_ratio=[0.85, 0.15],
+        aug=None,
+        seed=1509,
+    ):
+        super().__init__()
+        self.value = 0
+        self.batch_size = batch_size
+        self.seed = seed
+        self.data3 = data3
+
+        from sklearn.model_selection import train_test_split
+
+        self.traindata1 = []
+        self.traindata2 = []
+        self.train_indices1 = []
+        self.train_indices2 = []
+        self.valdata1 = []
+        self.valdata2 = []
+        self.val_indices1 = []
+        self.val_indices2 = []
+        for i in data1:
+            d1, v1, i1, i2 = train_test_split(
+                i,
+                range(len(i)),
+                train_size=train_test_ratio[0],
+                random_state=self.seed,
+            )
+            self.traindata1.append(d1)
+            self.valdata1.append(v1)
+            self.train_indices1.append(i1)
+            self.val_indices1.append(i2)
+
+        for i in data2:
+            d2, v2, i1, i2 = train_test_split(
+                i,
+                range(len(i)),
+                train_size=train_test_ratio[0],
+                random_state=self.seed,
+            )
+            self.traindata2.append(d2)
+            self.valdata2.append(v2)
+            self.train_indices2.append(i1)
+            self.val_indices2.append(i2)
+
+        torch.manual_seed(self.seed)
+
+        self.train_set = ESM3MultiTrackBalancedDataset(
+            self.traindata1,
+            self.traindata2,
+            self.data3,
+            augment=aug,
+            pos_neg_sample=pos_neg_train,
+        )
+
+        self.val_set = ESM3MultiTrackBalancedDataset(
+            self.valdata1,
+            self.valdata2,
+            self.data3,
+            augment=aug,
+            pos_neg_sample=pos_neg_val,
+        )
+
+        self.test_set = ESM3MultiTrackDatasetTEST(self.data3)
+
+    def train_dataloader(self):
+        self.value += 1
+        print("get train loader")
+        return MyDataLoader(
+            self.train_set,
+            True,
+            batch_size=self.batch_size,
+            num_workers=4,
+        )
+
+    def val_dataloader(self):
+        self.value += 1
+        print("get val loader")
+        return MyDataLoader(
+            self.val_set,
+            False,
+            batch_size=self.batch_size,
+            num_workers=4,
+        )
+
+    def predict_dataloader(self):
+        self.value += 1
+        print("get predict loader")
+        return MyDataLoader(
+            self.test_set,
+            False,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=4,
+        )
+
+
 class ESM3datamodule(L.LightningDataModule):
     def __init__(
         self,
@@ -322,7 +569,8 @@ class ESM3datamodule(L.LightningDataModule):
         self.batch_size = batch_size
         self.seed = seed
         torch.manual_seed(self.seed)
-        # train_set, val_set = torch.utils.data.random_split(ds1, train_test_split)
+
+        train_set, val_set = torch.utils.data.random_split(ds1, train_test_split)
         all_indices = np.arange(len(ds1))
 
         self.trainval_set = ds1

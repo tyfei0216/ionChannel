@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics
 from torch.autograd import Function
+from torch.optim.optimizer import Optimizer
 
 # from torchmetrics import Metric
 
@@ -157,6 +158,7 @@ class IonBaseclf(L.LightningModule):
         step=1.5,
         max_lambda=6,
         thres=0.95,
+        weight_decay=0.005,
     ):
         super().__init__()
         self.addadversial = addadversial
@@ -274,19 +276,23 @@ class IonBaseclf(L.LightningModule):
             prog_bar=False,
         )
 
-        if self.step_lambda and self.update_epoch:
-            self.update_epoch = False
-            if self.thres[1] < acc:
-                self.lamb = min(self.lamb * self.step, self.max_lambda)
-            if self.thres[0] > acc:
-                self.lamb = max(self.lamb / self.step, 0.1)
+        # not updated after batch
+        # if self.step_lambda and self.update_epoch:
+        #     self.update_epoch = False
+        #     if self.thres[1] < acc:
+        #         self.lamb = min(self.lamb * self.step, self.max_lambda)
+        #     if self.thres[0] > acc:
+        #         self.lamb = max(self.lamb / self.step, 0.1)
 
     def updateLambda(self, acc):
+        print("updating self lambda")
         if self.step_lambda:
             if self.thres[1] < acc:
                 self.lamb = min(self.lamb * self.step, self.max_lambda)
             if self.thres[0] > acc:
                 self.lamb = max(self.lamb / self.step, 0.1)
+
+        print("lambda", self.lamb)
 
     def test_step(self, batch, batch_idx):
         x = batch
@@ -315,7 +321,9 @@ class IonBaseclf(L.LightningModule):
     def configure_optimizers(self):
         print("get training optimizer")
         optimizer = torch.optim.Adam(
-            filter(lambda p: p.requires_grad, self.parameters()), lr=self.lr
+            filter(lambda p: p.requires_grad, self.parameters()),
+            lr=self.lr,
+            weight_decay=self.weight_decay,
         )
 
         return optimizer
@@ -334,6 +342,7 @@ class IonclfESM3(IonBaseclf):
         max_lambda=6,
         thres=0.95,
         p=0.2,
+        weight_decay=0.005,
         clf="linear",
         dis="linear",
     ) -> None:
@@ -345,6 +354,7 @@ class IonclfESM3(IonBaseclf):
             step=step,
             max_lambda=max_lambda,
             thres=thres,
+            weight_decay=weight_decay,
         )
 
         self.embed_dim = embed_dim
@@ -403,6 +413,7 @@ class IonclfESM2(IonBaseclf):
         step=1.5,
         max_lambda=6,
         thres=0.95,
+        weight_decay=0.005,
         p=0.2,
     ) -> None:
         super().__init__(
@@ -413,6 +424,7 @@ class IonclfESM2(IonBaseclf):
             step=step,
             max_lambda=max_lambda,
             thres=thres,
+            weight_decay=weight_decay,
         )
 
         self.save_hyperparameters(ignore=["esm_model"])
@@ -571,6 +583,7 @@ class IonclfBaseline(IonBaseclf):
         max_lambda=6,
         thres=0.95,
         p=0.2,
+        weight_decay=0.005,
         clf="linear",
         dis="linear",
     ) -> None:
@@ -582,6 +595,7 @@ class IonclfBaseline(IonBaseclf):
             step=step,
             max_lambda=max_lambda,
             thres=thres,
+            weight_decay=0.005,
         )
 
         self.feature_extract = SeqTransformer(embed_dim, pos_dim)
