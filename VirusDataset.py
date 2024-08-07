@@ -588,7 +588,6 @@ class ESM3datamodule(L.LightningDataModule):
             self.trainval_set,
             True,
             batch_size=self.batch_size,
-            shuffle=True,
             sampler=SubsetRandomSampler(self.train_indices),
             num_workers=4,
         )
@@ -600,7 +599,6 @@ class ESM3datamodule(L.LightningDataModule):
             self.trainval_set,
             False,
             batch_size=self.batch_size,
-            shuffle=False,
             sampler=SubsetRandomSampler(self.val_indices),
             num_workers=4,
         )
