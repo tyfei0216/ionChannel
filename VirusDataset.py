@@ -527,6 +527,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
         return MyDataLoader(
             self.train_set,
             True,
+            shuffle=True,
             batch_size=self.batch_size,
             num_workers=4,
         )
@@ -537,6 +538,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
         return MyDataLoader(
             self.val_set,
             False,
+            shuffle=False,
             batch_size=self.batch_size,
             num_workers=4,
         )
@@ -586,6 +588,7 @@ class ESM3datamodule(L.LightningDataModule):
             self.trainval_set,
             True,
             batch_size=self.batch_size,
+            shuffle=True,
             sampler=SubsetRandomSampler(self.train_indices),
             num_workers=4,
         )
@@ -597,6 +600,7 @@ class ESM3datamodule(L.LightningDataModule):
             self.trainval_set,
             False,
             batch_size=self.batch_size,
+            shuffle=False,
             sampler=SubsetRandomSampler(self.val_indices),
             num_workers=4,
         )
