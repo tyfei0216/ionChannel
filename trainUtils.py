@@ -274,11 +274,13 @@ def buildModel(
     if checkpoint is not None:
         t = torch.load(checkpoint)
         model.load_state_dict(t["state_dict"])
+        gs = t["global_step"]
         if "unfreeze" in configs["pretrain_model"]:
             t = configs["pretrain_model"]["unfreeze"]["steps"]
-            t = np.argsort(t)
+            idx = np.argsort(t)
+            idx = filter(lambda x: t[x] < gs, idx)
             model.load_freeze = [
-                configs["pretrain_model"]["unfreeze"]["layers"][i] for i in t
+                configs["pretrain_model"]["unfreeze"]["layers"][i] for i in idx
             ]
 
     return model
