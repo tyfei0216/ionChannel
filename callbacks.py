@@ -5,6 +5,7 @@ import torch
 import torchmetrics
 from pytorch_lightning.callbacks import BaseFinetuning, ModelCheckpoint
 from torch.optim import Optimizer
+from torch.utils import tensorboard
 
 import models
 
@@ -171,10 +172,11 @@ def getCallbacks(configs, args) -> List[L.Callback]:
     if "pretrain_model" in configs:
         print("build pretrain model unfreeze callback")
         if "unfreeze" in configs["pretrain_model"]:
-            ft = FinetuneUpdates(
-                iters=configs["pretrain_model"]["unfreeze"]["steps"],
-                unfreeze_layers=configs["pretrain_model"]["unfreeze"]["layers"],
-            )
-            ret.append(ft)
+            if args.checkpoint is None:
+                ft = FinetuneUpdates(
+                    iters=configs["pretrain_model"]["unfreeze"]["steps"],
+                    unfreeze_layers=configs["pretrain_model"]["unfreeze"]["layers"],
+                )
+                ret.append(ft)
 
     return ret

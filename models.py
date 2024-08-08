@@ -179,6 +179,8 @@ class IonBaseclf(L.LightningModule):
         self.training_step_outputs = []
         self.validation_step_outputs = []
 
+        self.load_freeze = None
+
     def forward(self, *args, **kwargs):
         raise NotImplementedError
 
@@ -359,11 +361,32 @@ class IonBaseclf(L.LightningModule):
 
     def configure_optimizers(self):
         print("get training optimizer")
-        optimizer = torch.optim.Adam(
-            filter(lambda p: p.requires_grad, self.parameters()),
-            lr=self.lr,
-            weight_decay=self.weight_decay,
-        )
+        if self.load_freeze is None:
+            optimizer = torch.optim.Adam(
+                filter(lambda p: p.requires_grad, self.parameters()),
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+            )
+        else:
+            l1 = list(self.dis.parameters())
+            l2 = list(self.clf.parameters())
+            l1.extend(l2)
+            optimizer = torch.optim.Adam(
+                l1,
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+            )
+            for need in self.load_freeze:
+                params = []
+                for i, j in self.named_parameters():
+                    flag = 1
+                    for k in need:
+                        if k not in i:
+                            flag = 0
+                            break
+                    if flag == 1:
+                        params.append(j)
+                optimizer.add_param_group({"params": params, "lr": self.lr})
 
         return optimizer
 
@@ -402,6 +425,7 @@ class IonclfESM3(IonBaseclf):
         self.reverse = GradientReversal(1)
 
         self.esm_model = esm_model
+
         assert clf in ["linear", "cnn"]
         assert dis in ["linear", "cnn"]
         if clf == "cnn":
@@ -612,7 +636,7 @@ class SeqTransformer(nn.Module):
 class IonclfBaseline(IonBaseclf):
     def __init__(
         self,
-        embed_dim=32,
+        embed_dim=128,
         pos_dim=32,
         addadversial=True,
         lamb=0.1,

@@ -1,6 +1,7 @@
 import os
 import pickle
 
+import numpy as np
 import pytorch_lightning
 import torch
 import torch.nn as nn
@@ -251,16 +252,36 @@ BUILD_MODEL = {
     "esm3": buildesm3Model,
 }
 
+MODEL_CLS = {
+    "simple": models.IonclfBaseline,
+    "esm3": models.IonclfESM3,
+    "esm2": models.IonclfESM2,
+}
 
-def buildModel(configs, basemodel=None) -> pytorch_lightning.LightningModule:
+
+def buildModel(
+    configs, basemodel=None, checkpoint=None
+) -> pytorch_lightning.LightningModule:
     model = "esm2"
     if "type" in configs["model"]:
         model = configs["model"]["type"]
 
     if model in BUILD_MODEL:
-        return BUILD_MODEL[model](configs, basemodel)
+        model = BUILD_MODEL[model](configs, basemodel)
     else:
         raise NotImplementedError
+
+    if checkpoint is not None:
+        t = torch.load(checkpoint)
+        model.load_state_dict(t["state_dict"])
+        if "unfreeze" in configs["pretrain_model"]:
+            t = configs["pretrain_model"]["unfreeze"]["steps"]
+            t = np.argsort(t)
+            model.load_freeze = [
+                configs["pretrain_model"]["unfreeze"]["layers"][i] for i in t
+            ]
+
+    return model
 
 
 def buildTrainer(configs, args):
