@@ -270,6 +270,10 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         self.ifaug = False
         if pos_neg_sample is not None:
             self.pos_neg_sample = pos_neg_sample
+            for i, j in zip(self.pos_neg_sample, [self.data1, self.data2]):
+                for k in range(len(i)):
+                    if i[k] < 0:
+                        i[k] = len(j[k])
         else:
             self.pos_neg_sample = [[], []]
             for i in self.data1:

@@ -36,6 +36,7 @@ class LambdaUpdate(L.Callback):
             self.warmup -= 1
         else:
             self.cnt += 1
+
         if self.cnt == self.check:
             self.cnt = 0
             scores = torch.concatenate([x["y"] for x in self.outputs])

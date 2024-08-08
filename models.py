@@ -170,8 +170,11 @@ class IonBaseclf(L.LightningModule):
         self.thres = thres
         self.update_epoch = False
         self.lr = lr
+        self.weight_decay = weight_decay
 
         self.acc = torchmetrics.Accuracy(task="binary")
+
+        self.last_train_step = 0
 
         self.training_step_outputs = []
         self.validation_step_outputs = []
@@ -202,22 +205,54 @@ class IonBaseclf(L.LightningModule):
 
         loss, loss1, loss2, y_pre, y = self._common_training_step(batch)
 
-        acc = self.acc(y_pre.squeeze(-1), y)
+        # acc = self.acc(y_pre.squeeze(-1), y)
 
-        self.log_dict(
-            {"predict loss": loss1.item(), "adversial loss": loss2.item(), "acc": acc},
-            prog_bar=True,
-            on_step=True,
-        )
         self.training_step_outputs.append(
             {
                 "loss": loss.detach().cpu(),
+                "loss1": loss1.detach().cpu(),
+                "loss2": loss2.detach().cpu(),
                 "y": y_pre.detach().squeeze(-1).cpu(),
                 "true_label": y.cpu(),
             }
         )
 
         return loss
+
+    def on_before_optimizer_step(self, optimizer: Optimizer) -> None:
+
+        loss = torch.stack(
+            [x["loss"] for x in self.training_step_outputs[self.last_train_step :]]
+        ).mean()
+        loss1 = torch.stack(
+            [x["loss1"] for x in self.training_step_outputs[self.last_train_step :]]
+        ).mean()
+        loss2 = torch.stack(
+            [x["loss2"] for x in self.training_step_outputs[self.last_train_step :]]
+        ).mean()
+        scores = torch.concatenate(
+            [x["y"] for x in self.training_step_outputs[self.last_train_step :]]
+        )
+        y = torch.concatenate(
+            [
+                x["true_label"]
+                for x in self.training_step_outputs[self.last_train_step :]
+            ]
+        )
+        acc = self.acc(scores, y)
+
+        self.last_train_step = len(self.training_step_outputs)
+
+        self.log_dict(
+            {
+                "train predict loss": loss1,
+                "train adversial loss": loss2,
+                "train loss": loss,
+                "train acc": acc,
+            },
+            logger=True,
+            prog_bar=True,
+        )
 
     def _common_epoch_end(self, outputs):
 
@@ -234,7 +269,7 @@ class IonBaseclf(L.LightningModule):
 
         loss, acc = self._common_epoch_end(self.training_step_outputs)
 
-        # print("finish training epoch, loss %f, acc %f"%(loss, acc))
+        print("finish training epoch, loss %f, acc %f" % (loss, acc))
         self.log_dict(
             {
                 "train_loss": loss,
@@ -245,6 +280,8 @@ class IonBaseclf(L.LightningModule):
             prog_bar=False,
         )
 
+        self.last_train_step = 0
+
         self.update_epoch = True
 
     def validation_step(self, batch, batch_idx):
@@ -253,9 +290,10 @@ class IonBaseclf(L.LightningModule):
 
         acc = self.acc(y_pre.squeeze(-1), y)
 
-        self.log_dict(
-            {"predict loss": loss1.item(), "adversial loss": loss2.item(), "acc": acc}
-        )
+        # self.log_dict(
+        #     {"predict loss": loss1.item(), "adversial loss": loss2.item(), "acc": acc},
+        #     logger=True,
+        # )
 
         self.validation_step_outputs.append(
             {"loss": loss.cpu(), "y": y_pre.squeeze(-1).cpu(), "true_label": y.cpu()}
@@ -265,13 +303,14 @@ class IonBaseclf(L.LightningModule):
 
     def on_validation_epoch_end(self):
         loss, acc = self._common_epoch_end(self.validation_step_outputs)
-        # print("finish validating, loss %f, acc %f"%(loss, acc))
+        print("finish validating, loss %f, acc %f" % (loss, acc))
         self.log_dict(
             {
                 "validate_loss": loss,
                 "validate_acc": acc,
             },
             on_step=False,
+            logger=True,
             on_epoch=True,
             prog_bar=False,
         )

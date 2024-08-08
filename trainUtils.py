@@ -9,6 +9,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 # import pytorch_lightning as L
 from pytorch_lightning.profilers import PyTorchProfiler
+from torch.utils import tensorboard
 
 import callbacks
 import models
@@ -278,20 +279,21 @@ def buildTrainer(configs, args):
 
     cbs = callbacks.getCallbacks(configs, args)
 
-    profiler = PyTorchProfiler(
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(
-            "tb_logs/%s" % args.name
-        ),
-    )
+    # profiler = PyTorchProfiler(
+    #     on_trace_ready=torch.profiler.tensorboard_trace_handler(
+    #         "tb_logs/%s" % args.name
+    #     ),
+    # )
     logger = TensorBoardLogger("tb_logs", name=args.name)
 
     trainer = pytorch_lightning.Trainer(
         strategy=args.strategy,
         logger=logger,
         accelerator="gpu",
-        profiler=profiler,
+        # profiler=profiler,
         devices=args.devices,
         max_epochs=configs["train"]["epoch"],
+        log_every_n_steps=1,
         accumulate_grad_batches=configs["train"]["accumulate_grad_batches"],
         callbacks=cbs,
     )
