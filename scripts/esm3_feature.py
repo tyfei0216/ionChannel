@@ -31,7 +31,7 @@ def ParseArgs():
 def main():
     args = ParseArgs()
     if args.model == "esm3_sm_open_v1":
-        model = ESM3.from_pretrained("esm3_sm_open_v1")
+        model = ESM3.from_pretrained("esm3_sm_open_v1", device="cpu")
     else:
         raise NotImplementedError
 
@@ -65,6 +65,7 @@ def main():
                 data["model"] = args.model
                 data["id"] = seq[0]
                 data["ori_seq"] = seq[1]
+                data["steps"] = args.steps
                 data["seq_t"] = res.sequence.cpu().numpy()
                 data["structure_t"] = res.structure.cpu().numpy()
                 data["second_t"] = res.secondary_structure.cpu().numpy()

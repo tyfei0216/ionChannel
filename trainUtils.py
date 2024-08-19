@@ -118,10 +118,16 @@ def loadDatasetesm3(configs):
             configs["augmentation"]["maskp"], configs["augmentation"]["maskpc"]
         )
     ]
-    aug = VirusDataset.DataAugmentation(step_points, maskp, crop, lens)
+    aug = VirusDataset.DataAugmentation(
+        step_points, maskp, crop, lens, tracks=configs["dataset"]["tracks"]
+    )
 
-    ds1 = VirusDataset.ESM3MultiTrackDataset(data1, data2, label, augment=aug)
-    ds2 = VirusDataset.ESM3MultiTrackDatasetTEST(data2)
+    ds1 = VirusDataset.ESM3MultiTrackDataset(
+        data1, data2, label, augment=aug, tracks=configs["dataset"]["tracks"]
+    )
+    ds2 = VirusDataset.ESM3MultiTrackDatasetTEST(
+        data2, tracks=configs["dataset"]["tracks"]
+    )
 
     ds = VirusDataset.ESM3datamodule(ds1, ds2)
     return ds
@@ -165,7 +171,9 @@ def loadBalancedDatasetesm3(configs):
             configs["augmentation"]["maskp"], configs["augmentation"]["maskpc"]
         )
     ]
-    aug = VirusDataset.DataAugmentation(step_points, maskp, crop, lens)
+    tracks = configs["augmentation"]["tracks"]
+
+    aug = VirusDataset.DataAugmentation(step_points, maskp, crop, lens, tracks)
 
     ds = VirusDataset.ESM3BalancedDataModule(
         pos_datasets,
@@ -176,6 +184,7 @@ def loadBalancedDatasetesm3(configs):
         pos_neg_val=configs["dataset"]["dataset_val_sample"],
         train_test_ratio=configs["dataset"]["train_test_ratio"],
         aug=aug,
+        tracks=configs["dataset"]["tracks"],
     )
     return ds
 
@@ -230,6 +239,10 @@ def buildesm2Model(configs, model):
 
 
 def buildesm3Model(configs, model):
+    if "clf_params" not in configs["model"]:
+        configs["model"]["clf_params"] = {}
+    if "dis_params" not in configs["model"]:
+        configs["model"]["dis_params"] = {}
     clsmodel = models.IonclfESM3(
         model,
         step_lambda=configs["model"]["lambda_adapt"],
@@ -240,7 +253,9 @@ def buildesm3Model(configs, model):
         thres=configs["model"]["lambda_thres"],
         lr=configs["model"]["lr"],
         clf=configs["model"]["clf"],
+        clf_params=configs["model"]["clf_params"],
         dis=configs["model"]["dis"],
+        dis_params=configs["model"]["dis_params"],
         weight_decay=configs["model"]["weight_decay"],
     )
     return clsmodel
@@ -272,7 +287,7 @@ def buildModel(
         raise NotImplementedError
 
     if checkpoint is not None:
-        t = torch.load(checkpoint)
+        t = torch.load(checkpoint, map_location="cpu")
         model.load_state_dict(t["state_dict"])
         gs = t["global_step"]
         if "unfreeze" in configs["pretrain_model"]:

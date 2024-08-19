@@ -29,7 +29,7 @@ class MyDataLoader(DataLoader):
             self.ds.ifaug = True
         else:
             self.ds.ifaug = False
-        print("now epoch ", self.epoch)
+        # print("now epoch ", self.epoch)
         return super().__iter__()
 
 
@@ -91,10 +91,18 @@ MIN_LENGTH = 50
 
 class DataAugmentation:
     def __init__(
-        self, step_points: list, maskp: list, crop: list, croprange: list
+        self,
+        step_points: list,
+        maskp: list,
+        crop: list,
+        croprange: list,
+        tracks: list = None,
     ) -> None:
         assert len(step_points) == len(maskp)
         assert len(maskp) == len(crop)
+        self.tracks = tracks
+        if self.tracks == None:
+            self.tracks = {"seq_t": 1, "structure_t": 1, "sasa_t": 1, "second_t": 1}
         self.step_points = step_points
         self.maskp = maskp
         self.crop = crop
@@ -111,6 +119,19 @@ class DataAugmentation:
 
     def getAugmentation(self, seqlen, step):
         maskp, crop = self._getSettings(step)
+        rettrack = {}
+        flag = 0
+        for i in self.tracks:
+
+            r = np.random.uniform(0.001, 0.999)
+            if r < self.tracks[i]:
+                flag = 1
+                rettrack[i] = True
+            else:
+                rettrack[i] = False
+
+        if flag == 0:
+            rettrack["seq_t"] = True
         if crop > 0:
             t = random.random()
             if t < crop:
@@ -118,8 +139,8 @@ class DataAugmentation:
                 sampledlen = int(sampledlen * np.random.uniform(0.8, 1.2))
                 sampledlen = MIN_LENGTH if sampledlen < MIN_LENGTH else sampledlen
                 sampledlen = min(sampledlen, seqlen - 2)
-                return maskp, sampledlen
-        return maskp, -1
+                return maskp, sampledlen, rettrack
+        return maskp, -1, rettrack
 
 
 class ESM3BaseDataset(Dataset):
@@ -215,7 +236,7 @@ class ESM3BaseDataset(Dataset):
             sample[i] = t
         return sample
 
-    def _augmentsample(self, sample, maskp, crop):
+    def _augmentsample(self, sample, maskp, crop, tracks=None):
         samplelen = len(sample[self.tracks[0]])
         if crop > 50:
             s = random.randint(1, samplelen - crop - 1)
@@ -231,6 +252,13 @@ class ESM3BaseDataset(Dataset):
             pos = self._generateMaskingPos(num, samplelen, "block")
             if len(pos) > 0:
                 sample = self._maskSequence(sample, pos)
+        if tracks is not None:
+            for i in tracks:
+                if not tracks[i]:
+                    sample.pop(i)
+
+        # print(tracks)
+        # print(sample)
         return sample
 
 
@@ -369,10 +397,10 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
             x2[i] = t2[i]
 
         if self.aug is not None and self.ifaug:
-            maskp, crop = self.aug.getAugmentation(
+            maskp, crop, tracks = self.aug.getAugmentation(
                 len(x1[self.tracks[0]]), self.step_cnt
             )
-            x1 = self._augmentsample(x1, maskp, crop)
+            x1 = self._augmentsample(x1, maskp, crop, tracks)
 
         return x1, torch.tensor([label]), x2
 
@@ -464,6 +492,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
         train_test_ratio=[0.85, 0.15],
         aug=None,
         seed=1509,
+        tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
     ):
         super().__init__()
         self.value = 0
@@ -513,6 +542,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
             self.data3,
             augment=aug,
             pos_neg_sample=pos_neg_train,
+            tracks=tracks,
         )
 
         self.val_set = ESM3MultiTrackBalancedDataset(
@@ -521,9 +551,10 @@ class ESM3BalancedDataModule(L.LightningDataModule):
             self.data3,
             augment=aug,
             pos_neg_sample=pos_neg_val,
+            tracks=tracks,
         )
 
-        self.test_set = ESM3MultiTrackDatasetTEST(self.data3)
+        self.test_set = ESM3MultiTrackDatasetTEST(self.data3, tracks=tracks)
 
     def train_dataloader(self):
         self.value += 1

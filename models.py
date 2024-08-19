@@ -42,7 +42,7 @@ class Linearcls(nn.Module):
         nn (_type_): _description_
     """
 
-    def __init__(self, input_dim=1536, take_embed="first", dropout=-1):
+    def __init__(self, input_dim=1536, take_embed="first", dropout=-1, p0=None):
         super().__init__()
 
         assert take_embed in ["first", "mean", "max"]
@@ -55,6 +55,10 @@ class Linearcls(nn.Module):
         self.l3 = nn.Linear(self.embed_dim // 4, 1)
         self.ln1 = nn.LayerNorm(self.embed_dim // 2)
         self.ln2 = nn.LayerNorm(self.embed_dim // 4)
+        if p0 is None:
+            self.p0 = None
+        else:
+            self.p0 = nn.Dropout(p0)
         if dropout > 0 and dropout < 1:
             self.dropout1 = nn.Dropout(p=self.dropout)
             self.dropout2 = nn.Dropout(p=self.dropout)
@@ -71,6 +75,9 @@ class Linearcls(nn.Module):
         elif self.take_embed == "max":
             x = x.transpose(1, 2)
             x = F.adaptive_max_pool1d(x, 1)
+
+        if self.p0 is not None:
+            x = self.p0(x)
 
         x = self.l1(x)
         x = self.ln1(x)
@@ -406,7 +413,9 @@ class IonclfESM3(IonBaseclf):
         p=0.2,
         weight_decay=0.005,
         clf="linear",
+        clf_params={},
         dis="linear",
+        dis_params={},
     ) -> None:
         super().__init__(
             addadversial=addadversial,
@@ -429,17 +438,17 @@ class IonclfESM3(IonBaseclf):
         assert clf in ["linear", "cnn"]
         assert dis in ["linear", "cnn"]
         if clf == "cnn":
-            self.clf = CNNcls()
+            self.clf = CNNcls(**clf_params)
         else:
-            self.clf = Linearcls()
+            self.clf = Linearcls(**clf_params)
         if dis == "cnn":
-            self.dis = CNNcls()
+            self.dis = CNNcls(**dis_params)
         else:
-            self.dis = Linearcls()
+            self.dis = Linearcls(**dis_params)
 
     def forward(self, input_dict):
 
-        for i in ["sequence_t", "structure_t", "ss8_t", "sasa_t"]:
+        for i in ["seq_t", "structure_t", "ss8_t", "sasa_t"]:
             if i not in input_dict:
                 input_dict[i] = None
             else:
@@ -447,7 +456,7 @@ class IonclfESM3(IonBaseclf):
                     input_dict[i] = input_dict[i].unsqueeze(0)
 
         representations = self.esm_model(
-            sequence_tokens=input_dict["sequence_t"],
+            sequence_tokens=input_dict["seq_t"],
             structure_tokens=input_dict["structure_t"],
             ss8_tokens=input_dict["ss8_t"],
             sasa_tokens=input_dict["sasa_t"],
@@ -658,7 +667,7 @@ class IonclfBaseline(IonBaseclf):
             step=step,
             max_lambda=max_lambda,
             thres=thres,
-            weight_decay=0.005,
+            weight_decay=weight_decay,
         )
 
         self.feature_extract = SeqTransformer(embed_dim, pos_dim)
