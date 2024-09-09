@@ -67,6 +67,15 @@ def readFasta(path, to_upper=True, remove="whitespaces", truclength=1500, checks
 
             seq.append(t)
 
+        s = "".join(seq)
+        seq = []
+        if len(s) > 0:
+            if to_upper:
+                s = s.upper()
+            if truclength is not None:
+                s = s[:truclength]
+            yield line, s
+
 
 def readNCBICsv(
     path, to_upper=True, remove="whitespaces", truclength=1500, checkseq=re3

@@ -5,7 +5,6 @@ import numpy as np
 import pytorch_lightning
 import torch
 import torch.nn as nn
-from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
 # import pytorch_lightning as L
@@ -288,7 +287,7 @@ def buildModel(
 
     if checkpoint is not None:
         t = torch.load(checkpoint, map_location="cpu")
-        model.load_state_dict(t["state_dict"])
+        model.load_state_dict(t["state_dict"], strict=False)
         gs = t["global_step"]
         if "unfreeze" in configs["pretrain_model"]:
             t = configs["pretrain_model"]["unfreeze"]["steps"]
@@ -323,6 +322,11 @@ def buildTrainer(configs, args):
     #     ),
     # )
     logger = TensorBoardLogger("tb_logs", name=args.name)
+
+    if args.strategy == "deep":
+        args.strategy = pytorch_lightning.strategies.DeepSpeedStrategy()
+
+    pytorch_lightning.seed_everything(configs["train"]["seed"])
 
     trainer = pytorch_lightning.Trainer(
         strategy=args.strategy,

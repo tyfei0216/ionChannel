@@ -24,7 +24,7 @@ def ParseArgs():
     # parser.add_argument("-rh", "--rangeh", type=int, default=800)
     parser.add_argument("-s", "--save", type=str, required=True)
     parser.add_argument("--seed", type=int, default=1509)
-    parser.add_argument("--lengthThres", type=int, default=2000)
+    parser.add_argument("--lengthThres", type=int, default=1498)
     parser.add_argument("-d", "--device", type=int, default=0)
     parser.add_argument("--steps", type=int, default=8)
 
@@ -53,6 +53,9 @@ def main():
         for count in range(args.lengths):
             sampledlen = random.sample(lens, 1)[0]
             sampledlen = int(sampledlen * np.random.uniform(0.8, 1.2))
+            if sampledlen > args.lengthThres:
+                sampledlen = args.lengthThres
+
             torch.manual_seed(args.seed)
             protein = ESMProtein(sequence="_" * sampledlen)
             protein = model.generate(
@@ -74,6 +77,7 @@ def main():
             data = {}
             data["randomseed"] = args.seed
             data["model"] = args.model
+            data["steps"] = args.steps
             data["ori_seq"] = protein.sequence
             data["seq_t"] = res.sequence.cpu().numpy()
             data["structure_t"] = res.structure.cpu().numpy()

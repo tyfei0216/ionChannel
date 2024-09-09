@@ -20,7 +20,8 @@ def ParseArgs():
     parser.add_argument("-f", "--fasta", type=str, required=True)
     parser.add_argument("-s", "--save", type=str, required=True)
     parser.add_argument("--seed", type=int, default=1509)
-    parser.add_argument("--lengthThres", type=int, default=2000)
+    # parser.add_argument("--seed", type=int, default=1509)
+    parser.add_argument("--lengthThres", type=int, default=1498)
     parser.add_argument("-d", "--device", type=int, default=0)
     parser.add_argument("--steps", type=int, default=16)
 
