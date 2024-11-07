@@ -174,6 +174,9 @@ def loadBalancedDatasetesm3(configs):
 
     aug = VirusDataset.DataAugmentation(step_points, maskp, crop, lens, tracks)
 
+    if "required_labels" not in configs["dataset"]:
+        configs["dataset"]["required_labels"] = []
+
     ds = VirusDataset.ESM3BalancedDataModule(
         pos_datasets,
         neg_datasets,
@@ -184,6 +187,7 @@ def loadBalancedDatasetesm3(configs):
         train_test_ratio=configs["dataset"]["train_test_ratio"],
         aug=aug,
         tracks=configs["dataset"]["tracks"],
+        required_labels=configs["dataset"]["required_labels"],
     )
     return ds
 
@@ -242,6 +246,13 @@ def buildesm3Model(configs, model):
         configs["model"]["clf_params"] = {}
     if "dis_params" not in configs["model"]:
         configs["model"]["dis_params"] = {}
+
+    if "additional_label_weights" not in configs["model"]:
+        configs["model"]["additional_label_weights"] = []
+
+    assert len(configs["model"]["additional_label_weights"]) == len(
+        configs["dataset"]["required_labels"]
+    )
     clsmodel = models.IonclfESM3(
         model,
         step_lambda=configs["model"]["lambda_adapt"],
@@ -256,6 +267,7 @@ def buildesm3Model(configs, model):
         dis=configs["model"]["dis"],
         dis_params=configs["model"]["dis_params"],
         weight_decay=configs["model"]["weight_decay"],
+        addition_label_weights=configs["model"]["additional_label_weights"],
     )
     return clsmodel
 

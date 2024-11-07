@@ -5,6 +5,7 @@ import sys
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
+import pandas as pd
 import torch
 from esm.models.esm3 import ESM3
 from esm.sdk.api import ESMProtein, GenerationConfig
@@ -41,6 +42,10 @@ def main():
 
     seqs = ioutils.readFasta(args.fasta)
     seqss = [i for i in seqs]
+
+    # df = pd.read_excel(
+    #     "/home/tyfei/ionChannel/scripts/v1_pure_20241011.xlsx", index_col=0
+    # )
 
     allres = []
     with torch.no_grad():

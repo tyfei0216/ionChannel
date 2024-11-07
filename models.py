@@ -42,17 +42,20 @@ class Linearcls(nn.Module):
         nn (_type_): _description_
     """
 
-    def __init__(self, input_dim=1536, take_embed="first", dropout=-1, p0=None):
+    def __init__(
+        self, input_dim=1536, take_embed="first", dropout=-1, p0=None, output_dim=1
+    ):
         super().__init__()
 
         assert take_embed in ["first", "mean", "max"]
         self.embed_dim = input_dim
         self.dropout = dropout
         self.take_embed = take_embed
+        self.output_dim = output_dim
 
         self.l1 = nn.Linear(self.embed_dim, self.embed_dim // 2)
         self.l2 = nn.Linear(self.embed_dim // 2, self.embed_dim // 4)
-        self.l3 = nn.Linear(self.embed_dim // 4, 1)
+        self.l3 = nn.Linear(self.embed_dim // 4, output_dim)
         self.ln1 = nn.LayerNorm(self.embed_dim // 2)
         self.ln2 = nn.LayerNorm(self.embed_dim // 4)
         if p0 is None:
@@ -91,7 +94,10 @@ class Linearcls(nn.Module):
         x = F.gelu(x)
         x = self.l3(x)
         # print("lin", x.shape)
-        return x
+        if self.output_dim == 1:
+            return x
+        else:
+            return x[:, 0], x[:, 1:]
 
 
 class CNNcls(nn.Module):
@@ -101,10 +107,11 @@ class CNNcls(nn.Module):
         nn (_type_): _description_
     """
 
-    def __init__(self, input_dim=1536, pool="max"):
+    def __init__(self, input_dim=1536, pool="max", output_dim=1):
         super().__init__()
 
         self.embed_dim = input_dim
+        self.output_dim = output_dim
         assert pool in ["max", "avg"]
         self.pool = pool
 
@@ -113,7 +120,7 @@ class CNNcls(nn.Module):
         self.cl3 = nn.Conv1d(self.embed_dim // 4, self.embed_dim // 8, kernel_size=5)
 
         self.ll1 = nn.Linear(self.embed_dim // 8, self.embed_dim // 16)
-        self.ll2 = nn.Linear(self.embed_dim // 16, 1)
+        self.ll2 = nn.Linear(self.embed_dim // 16, output_dim)
 
     def forward(self, x: torch.Tensor):
 
@@ -137,7 +144,10 @@ class CNNcls(nn.Module):
         x = F.gelu(x)
         x = self.ll2(x)
         # print("cnn", x.shape)
-        return x
+        if self.output_dim == 1:
+            return x
+        else:
+            return x[:, 0], x[:, 1:]
 
 
 class IonBaseclf(L.LightningModule):
@@ -166,9 +176,18 @@ class IonBaseclf(L.LightningModule):
         max_lambda=6,
         thres=0.95,
         weight_decay=0.005,
+        additional_label_weights=[],
     ):
         super().__init__()
         self.addadversial = addadversial
+        if not isinstance(additional_label_weights, torch.Tensor):
+            additional_label_weights = torch.tensor(
+                additional_label_weights, requires_grad=False
+            )
+        # self.additional_label_weights = additional_label_weights
+        additional_label_weights = torch.nn.Parameter(additional_label_weights)
+        self.register_parameter("additional_label_weights", additional_label_weights)
+        self.additional_label_weights.requires_grad = False
 
         self.lamb = lamb
         self.step_lambda = step_lambda
@@ -198,7 +217,32 @@ class IonBaseclf(L.LightningModule):
         # print(y_pre, y)
         if len(y.size()) == 2:
             y = y.squeeze(0)
-        loss1 = F.binary_cross_entropy(y_pre.squeeze(-1), y.float())
+
+        if len(self.additional_label_weights) == 0:
+            loss1 = F.binary_cross_entropy(y_pre.squeeze(-1), y.float())
+        else:
+            if y.dim() == 1:
+                y1 = y[[0]].unsqueeze(0)
+                y2 = y[1:].unsqueeze(0)
+            elif y.dim() == 2:
+                y1 = y[:, [0]]
+                y2 = y[:, 1:]
+
+            y_pre1, y_pre2 = y_pre
+            if y_pre1.dim() == 1:
+                y_pre1 = y_pre1.unsqueeze(0)
+            if y_pre2.dim() == 1:
+                y_pre2 = y_pre2.unsqueeze(0)
+
+            loss1 = F.binary_cross_entropy(y_pre1, y1.float())
+            loss1_a = F.binary_cross_entropy(
+                y_pre2,
+                y2.float(),
+                weight=self.additional_label_weights,
+            )
+            y_pre = y_pre1  # .squeeze(-1)
+            y = y1.squeeze(-1)
+
         loss2 = F.binary_cross_entropy(
             dis_pre_x1, torch.zeros_like(dis_pre_x1)
         ) + F.binary_cross_entropy(dis_pre_x2, torch.ones_like(dis_pre_x1))
@@ -208,24 +252,38 @@ class IonBaseclf(L.LightningModule):
         else:
             loss = loss1
 
-        return loss, loss1, loss2, y_pre, y
+        if len(self.additional_label_weights) > 0:
+            loss += loss1_a
+            return loss, (loss1, loss1_a), loss2, y_pre, y
+        else:
+            return loss, loss1, loss2, y_pre, y
 
     def training_step(self, batch, batch_idx):
 
         loss, loss1, loss2, y_pre, y = self._common_training_step(batch)
 
         # acc = self.acc(y_pre.squeeze(-1), y)
-
-        self.training_step_outputs.append(
-            {
-                "loss": loss.detach().cpu(),
-                "loss1": loss1.detach().cpu(),
-                "loss2": loss2.detach().cpu(),
-                "y": y_pre.detach().squeeze(-1).cpu(),
-                "true_label": y.cpu(),
-            }
-        )
-
+        if len(self.additional_label_weights) == 0:
+            self.training_step_outputs.append(
+                {
+                    "loss": loss.detach().cpu(),
+                    "loss1": loss1.detach().cpu(),
+                    "loss2": loss2.detach().cpu(),
+                    "y": y_pre.detach().squeeze(-1).cpu(),
+                    "true_label": y.cpu(),
+                }
+            )
+        else:
+            self.training_step_outputs.append(
+                {
+                    "loss": loss.detach().cpu(),
+                    "loss1": loss1[0].detach().cpu(),
+                    "loss1_a": loss1[1].detach().cpu(),
+                    "loss2": loss2.detach().cpu(),
+                    "y": y_pre.detach().squeeze(-1).cpu(),
+                    "true_label": y.cpu(),
+                }
+            )
         return loss
 
     def on_before_optimizer_step(self, optimizer: Optimizer) -> None:
@@ -236,6 +294,13 @@ class IonBaseclf(L.LightningModule):
         loss1 = torch.stack(
             [x["loss1"] for x in self.training_step_outputs[self.last_train_step :]]
         ).mean()
+        if len(self.additional_label_weights) > 0:
+            loss1_a = torch.stack(
+                [
+                    x["loss1_a"]
+                    for x in self.training_step_outputs[self.last_train_step :]
+                ]
+            ).mean()
         loss2 = torch.stack(
             [x["loss2"] for x in self.training_step_outputs[self.last_train_step :]]
         ).mean()
@@ -252,16 +317,29 @@ class IonBaseclf(L.LightningModule):
 
         self.last_train_step = len(self.training_step_outputs)
 
-        self.log_dict(
-            {
-                "train predict loss": loss1,
-                "train adversial loss": loss2,
-                "train loss": loss,
-                "train acc": acc,
-            },
-            logger=True,
-            prog_bar=True,
-        )
+        if len(self.additional_label_weights) == 0:
+            self.log_dict(
+                {
+                    "train predict loss": loss1,
+                    "train adversial loss": loss2,
+                    "train loss": loss,
+                    "train acc": acc,
+                },
+                logger=True,
+                prog_bar=True,
+            )
+        else:
+            self.log_dict(
+                {
+                    "train predict loss": loss1,
+                    "train additional loss": loss1_a,
+                    "train adversial loss": loss2,
+                    "train loss": loss,
+                    "train acc": acc,
+                },
+                logger=True,
+                prog_bar=True,
+            )
 
     def _common_epoch_end(self, outputs):
 
@@ -412,6 +490,7 @@ class IonclfESM3(IonBaseclf):
         thres=0.95,
         p=0.2,
         weight_decay=0.005,
+        addition_label_weights=[],
         clf="linear",
         clf_params={},
         dis="linear",
@@ -426,6 +505,7 @@ class IonclfESM3(IonBaseclf):
             max_lambda=max_lambda,
             thres=thres,
             weight_decay=weight_decay,
+            additional_label_weights=addition_label_weights,
         )
 
         self.embed_dim = embed_dim
@@ -437,6 +517,8 @@ class IonclfESM3(IonBaseclf):
 
         assert clf in ["linear", "cnn"]
         assert dis in ["linear", "cnn"]
+        if "output_dim" not in clf_params:
+            clf_params["output_dim"] = 1 + len(self.additional_label_weights)
         if clf == "cnn":
             self.clf = CNNcls(**clf_params)
         else:
@@ -466,7 +548,10 @@ class IonclfESM3(IonBaseclf):
         x1 = self.reverse(x)
         x1 = x
         pre = self.clf(x)
-        pre = F.sigmoid(pre)
+        if len(self.additional_label_weights) == 0:
+            pre = F.sigmoid(pre)
+        else:
+            pre = (F.sigmoid(pre[0]), F.sigmoid(pre[1]))
 
         y = self.dis(x1)
         y = F.sigmoid(y)

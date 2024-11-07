@@ -33,6 +33,7 @@ class MyDataLoader(DataLoader):
         return super().__iter__()
 
 
+# deprecated
 def readVirusSequences(pos=None, trunc=1498, sample=300, seed=1509):
     random.seed(seed)
     print("read positive samples")
@@ -144,10 +145,17 @@ class DataAugmentation:
 
 
 class ESM3BaseDataset(Dataset):
-    def __init__(self, tracks=["seq_t", "structure_t", "sasa_t", "second_t"]) -> None:
+    def __init__(
+        self,
+        tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
+        min_length=50,
+        required_labels=[],
+    ) -> None:
         assert len(tracks) > 0
         self.tracks = tracks
         self.step_cnt = 0
+        self.min_length = min_length
+        self.required_labels = required_labels
 
     def step(self):
         self.step_cnt += 1
@@ -207,7 +215,10 @@ class ESM3BaseDataset(Dataset):
                     case _:
                         raise ValueError
             case _:
-                raise ValueError
+                assert track == "seq_t"
+                assert token in C.SEQUENCE_VOCAB
+                return C.SEQUENCE_VOCAB.index(token)
+                # raise ValueError
 
     def _maskSequence(self, sample, pos):
         for i in sample:
@@ -236,30 +247,80 @@ class ESM3BaseDataset(Dataset):
             sample[i] = t
         return sample
 
+    def checkAndPickTmm(self, sample):
+        if "Tmranges" not in sample:
+            return None
+        samplelen = len(sample[self.tracks[0]]) - 2
+        tmranges = sample["Tmranges"]
+        can_pick = []
+        for i in tmranges:
+            if i[1] < samplelen:
+                can_pick.append(i)
+
+        if len(can_pick) == 0:
+            return None
+
+        t = random.sample(can_pick, 1)[0]
+        return t
+
     def _augmentsample(self, sample, maskp, crop, tracks=None):
         samplelen = len(sample[self.tracks[0]])
-        if crop > 50:
-            s = random.randint(1, samplelen - crop - 1)
-            sample = self._cropSequence(sample, s, s + crop)
-            samplelen = crop + 2
+        ret = {}
+        for i in self.tracks:
+            ret[i] = sample[i].copy()
+        if crop > self.min_length:
+            t = self.checkAndPickTmm(sample)
+            if t is None:
+                s = random.randint(1, samplelen - crop - 1)
+                ret = self._cropSequence(ret, s, s + crop)
+                samplelen = len(ret[self.tracks[0]])
+            else:
+                if crop < (t[1] - t[0]):
+                    crop = t[1] - t[0]
+
+                s = random.randint(
+                    max(1, t[0] - (crop - t[1] + t[0])), min(t[0], samplelen - crop - 1)
+                )
+                ret = self._cropSequence(ret, s, s + crop)
+                samplelen = len(ret[self.tracks[0]])
+
         if maskp[0] > 0:
             num = np.random.binomial(samplelen - 2, maskp[0])
             pos = self._generateMaskingPos(num, samplelen)
             if len(pos) > 0:
-                sample = self._maskSequence(sample, pos)
+                ret = self._maskSequence(ret, pos)
         if maskp[1] > 0:
             num = np.random.binomial(samplelen - 2, maskp[0])
             pos = self._generateMaskingPos(num, samplelen, "block")
             if len(pos) > 0:
-                sample = self._maskSequence(sample, pos)
-        if tracks is not None:
-            for i in tracks:
-                if not tracks[i]:
-                    sample.pop(i)
+                ret = self._maskSequence(ret, pos)
+        # if tracks is not None:
+        #     for i in tracks:
+        #         if not tracks[i]:
+        #             ret.pop(i)
 
         # print(tracks)
         # print(sample)
-        return sample
+        return ret
+
+    def processSample(self, sample):
+        if self.aug is not None and self.ifaug:
+            maskp, crop, tracks = self.aug.getAugmentation(
+                len(sample[self.tracks[0]]), self.step_cnt
+            )
+            x1 = self._augmentsample(sample, maskp, crop, tracks)
+        else:
+            x1 = {}
+            for i in self.tracks:
+                x1[i] = sample[i]
+        return x1
+
+    def prepareLabels(self, sample, label):
+        labels = [label]
+        for i in self.required_labels:
+            labels.append(sample["classes"][i])
+
+        return labels
 
 
 class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
@@ -272,6 +333,7 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         augment: DataAugmentation = None,
         pos_neg_sample=None,
         tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
+        required_labels=[],
     ) -> None:
         """_summary_
 
@@ -282,7 +344,7 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
             augment (DataAugmentation, optional): _description_. Defaults to None.
             tracks (list, optional): _description_. Defaults to ["seq_t", "structure_t", "sasa_t", "second_t"].
         """
-        super().__init__(tracks=tracks)
+        super().__init__(tracks=tracks, required_labels=required_labels)
         self.data1 = data1
         self.data2 = data2
         self.data3 = data3
@@ -388,21 +450,19 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         return self.data3[self.data3order[idx % len(self.data3)]]
 
     def __getitem__(self, idx):
-        x1 = {}
+        # x1 = {}
         x2 = {}
         t1, label = self._getitemx1(idx)
         t2 = self._getitemx2(idx)
+
+        x1 = self.processSample(t1)
+
         for i in self.tracks:
-            x1[i] = t1[i]
             x2[i] = t2[i]
 
-        if self.aug is not None and self.ifaug:
-            maskp, crop, tracks = self.aug.getAugmentation(
-                len(x1[self.tracks[0]]), self.step_cnt
-            )
-            x1 = self._augmentsample(x1, maskp, crop, tracks)
+        labels = self.prepareLabels(t1, label)
 
-        return x1, torch.tensor([label]), x2
+        return x1, torch.tensor(labels), x2
 
 
 class ESM3MultiTrackDataset(ESM3BaseDataset):
@@ -437,17 +497,16 @@ class ESM3MultiTrackDataset(ESM3BaseDataset):
     # super().step()
 
     def __getitem__(self, idx):
-        x1 = {}
+        # x1 = {}
         x2 = {}
+
         for i in self.tracks:
-            x1[i] = self.data1[idx][i]
+            # x1[i] = self.data1[idx][i]
             x2[i] = self.data2[self.data2order[idx % len(self.data2)]][i]
-        if self.aug is not None and self.ifaug:
-            maskp, crop = self.aug.getAugmentation(
-                len(x1[self.tracks[0]]), self.step_cnt
-            )
-            x1 = self._augmentsample(x1, maskp, crop)
-        return x1, torch.tensor([self.label[idx]]), x2
+
+        x1 = self.processSample(self.data1[idx])
+        labels = self.prepareLabels(self.data1[idx], self.label[idx])
+        return x1, torch.tensor(labels), x2
 
 
 class ESM3MultiTrackDatasetTEST(ESM3BaseDataset):
@@ -469,14 +528,15 @@ class ESM3MultiTrackDatasetTEST(ESM3BaseDataset):
         super().step()
 
     def __getitem__(self, idx):
-        x1 = {}
-        for i in self.tracks:
-            x1[i] = self.data1[idx][i]
-        if self.aug is not None:
-            maskp, crop = self.aug.getAugmentation(
-                len(x1[self.tracks[0]]), self.step_cnt
-            )
-            x1 = self._augmentsample(x1, maskp, crop)
+        # x1 = {}
+        # for i in self.tracks:
+        #     x1[i] = self.data1[idx][i]
+        # if self.aug is not None:
+        #     maskp, crop = self.aug.getAugmentation(
+        #         len(x1[self.tracks[0]]), self.step_cnt
+        #     )
+        #     x1 = self._augmentsample(x1, maskp, crop)
+        x1 = self.processSample(self.data1[idx])
         return x1
 
 
@@ -493,12 +553,14 @@ class ESM3BalancedDataModule(L.LightningDataModule):
         aug=None,
         seed=1509,
         tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
+        required_labels=[],
     ):
         super().__init__()
         self.value = 0
         self.batch_size = batch_size
         self.seed = seed
         self.data3 = data3
+        self.required_labels = []
 
         from sklearn.model_selection import train_test_split
 
@@ -543,6 +605,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
             augment=aug,
             pos_neg_sample=pos_neg_train,
             tracks=tracks,
+            required_labels=required_labels,
         )
 
         self.val_set = ESM3MultiTrackBalancedDataset(
@@ -552,6 +615,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
             augment=aug,
             pos_neg_sample=pos_neg_val,
             tracks=tracks,
+            required_labels=required_labels,
         )
 
         self.test_set = ESM3MultiTrackDatasetTEST(self.data3, tracks=tracks)
