@@ -51,15 +51,23 @@ class LambdaUpdate(L.Callback):
 
 class DatasetAugmentationUpdate(L.Callback):
     def __init__(self):
-        pass
+        super().__init__()
+
+    # def on_train_epoch_end(
+    #     self, trainer: L.Trainer, pl_module: L.LightningModule
+    # ) -> None:
+    #     trainer.train_dataloader.dataset.newEpoch
+    # print(trainer.train_dataloader)
+    # for i in trainer.train_dataloader:
+    #     i.step()
 
     def on_before_optimizer_step(
         self, trainer: L.Trainer, pl_module: L.LightningModule, optimizer: Optimizer
     ) -> None:
+        # print("step aug")
         trainer.train_dataloader.step()
-        # print(trainer.train_dataloader)
-        # for i in trainer.train_dataloader:
-        #     i.step()
+        # self.update = False
+        # self.cnt += 1
 
 
 class FinetuneUpdates(BaseFinetuning):
@@ -170,8 +178,9 @@ def getCallbacks(configs, args) -> List[L.Callback]:
         ret.append(au)
 
     if "pretrain_model" in configs:
-        print("build pretrain model unfreeze callback")
+
         if "unfreeze" in configs["pretrain_model"]:
+            print("build pretrain model unfreeze callback")
             if args.checkpoint is None:
                 ft = FinetuneUpdates(
                     iters=configs["pretrain_model"]["unfreeze"]["steps"],

@@ -33,10 +33,14 @@ def loadesm3(configs):
     from esm.models.esm3 import ESM3
 
     model = ESM3.from_pretrained("esm3_sm_open_v1").cpu()
+    q = [
+        "transformer.blocks." + str(s) + "."
+        for s in configs["pretrain_model"]["add_lora"]
+    ]
     model = models.fixParameters(model, unfix=configs["pretrain_model"]["unfix_layers"])
     model = models.addlora(
         model,
-        layers=configs["pretrain_model"]["add_lora"],
+        layers=q,
         ranks=configs["pretrain_model"]["rank"],
         alphas=configs["pretrain_model"]["alpha"],
     )
@@ -253,6 +257,8 @@ def buildesm3Model(configs, model):
     assert len(configs["model"]["additional_label_weights"]) == len(
         configs["dataset"]["required_labels"]
     )
+    if "lr_backbone" not in configs["model"]:
+        configs["model"]["lr_backbone"] = None
     clsmodel = models.IonclfESM3(
         model,
         step_lambda=configs["model"]["lambda_adapt"],
@@ -262,6 +268,7 @@ def buildesm3Model(configs, model):
         p=configs["model"]["dropout"],
         thres=configs["model"]["lambda_thres"],
         lr=configs["model"]["lr"],
+        lr_backbone=configs["model"]["lr_backbone"],
         clf=configs["model"]["clf"],
         clf_params=configs["model"]["clf_params"],
         dis=configs["model"]["dis"],
@@ -340,6 +347,9 @@ def buildTrainer(configs, args):
 
     pytorch_lightning.seed_everything(configs["train"]["seed"])
 
+    if "gradient_clip_val" not in configs["train"]:
+        configs["train"]["gradient_clip_val"] = None
+
     trainer = pytorch_lightning.Trainer(
         strategy=args.strategy,
         logger=logger,
@@ -348,6 +358,7 @@ def buildTrainer(configs, args):
         devices=args.devices,
         max_epochs=configs["train"]["epoch"],
         log_every_n_steps=1,
+        gradient_clip_val=configs["train"]["gradient_clip_val"],
         accumulate_grad_batches=configs["train"]["accumulate_grad_batches"],
         callbacks=cbs,
     )

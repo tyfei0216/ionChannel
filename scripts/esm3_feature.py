@@ -24,10 +24,6 @@ def ParseArgs():
     # parser.add_argument("--seed", type=int, default=1509)
     parser.add_argument("--lengthThres", type=int, default=1498)
     parser.add_argument("-d", "--device", type=int, default=0)
-    parser.add_argument("--steps", type=int, default=16)
-
-    args = parser.parse_args()
-    return args
 
 
 def main():

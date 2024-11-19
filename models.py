@@ -171,6 +171,7 @@ class IonBaseclf(L.LightningModule):
         addadversial=True,
         lamb=0.1,
         lr=5e-4,
+        lr_backbone=None,
         step_lambda=True,
         step=1.5,
         max_lambda=6,
@@ -197,6 +198,7 @@ class IonBaseclf(L.LightningModule):
         self.update_epoch = False
         self.lr = lr
         self.weight_decay = weight_decay
+        self.lr_backbone = lr_backbone
 
         self.acc = torchmetrics.Accuracy(task="binary")
 
@@ -235,11 +237,19 @@ class IonBaseclf(L.LightningModule):
                 y_pre2 = y_pre2.unsqueeze(0)
 
             loss1 = F.binary_cross_entropy(y_pre1, y1.float())
+            # print(y_pre1.shape, self.additional_label_weights[None, :].shape)
+            q = self.additional_label_weights[None, :].repeat(y_pre1.shape[0], 1)
+            q[y2 < 0] = 0.0
+            q.require_grad = False
+            y2[y2 < 0] = 0
+            y2[y2 > 1] = 1
+            # print(y_pre2, y2, q)
             loss1_a = F.binary_cross_entropy(
                 y_pre2,
                 y2.float(),
                 weight=self.additional_label_weights,
             )
+            # print("finish loss")
             y_pre = y_pre1  # .squeeze(-1)
             y = y1.squeeze(-1)
 
@@ -446,6 +456,28 @@ class IonBaseclf(L.LightningModule):
 
     def configure_optimizers(self):
         print("get training optimizer")
+        if self.lr_backbone is not None:
+            l1 = []
+            l2 = []
+            for i, j in self.named_parameters():
+                if j.requires_grad:
+                    if "esm" in i:
+                        l1.append(j)
+                    else:
+                        l2.append(j)
+
+            param_dicts = [
+                {
+                    "params": l1,
+                    "lr": self.lr_backbone,
+                },
+                {
+                    "params": l2,
+                    "lr": self.lr,
+                },
+            ]
+            return torch.optim.Adam(param_dicts, weight_decay=self.weight_decay)
+
         if self.load_freeze is None:
             optimizer = torch.optim.Adam(
                 filter(lambda p: p.requires_grad, self.parameters()),
@@ -484,6 +516,7 @@ class IonclfESM3(IonBaseclf):
         addadversial=True,
         lamb=0.1,
         lr=5e-4,
+        lr_backbone=None,
         step_lambda=True,
         step=1.5,
         max_lambda=6,
@@ -500,6 +533,7 @@ class IonclfESM3(IonBaseclf):
             addadversial=addadversial,
             lamb=lamb,
             lr=lr,
+            lr_backbone=lr_backbone,
             step_lambda=step_lambda,
             step=step,
             max_lambda=max_lambda,
@@ -557,6 +591,14 @@ class IonclfESM3(IonBaseclf):
         y = F.sigmoid(y)
 
         return pre, y
+
+    def on_save_checkpoint(self, checkpoint):
+        backbones = []
+        for i, j in self.named_parameters():
+            if "esm" in i and not j.requires_grad:
+                backbones.append(i)
+        for i in backbones:
+            del checkpoint["state_dict"][i]
 
 
 class IonclfESM2(IonBaseclf):

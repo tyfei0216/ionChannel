@@ -19,72 +19,20 @@ class MyDataLoader(DataLoader):
         self.step_ds = step_ds
 
     def step(self):
+        # print("step dataset")
         if self.step_ds:
-            self.ds.newEpoch()
+            self.ds.step()
 
     def __iter__(self):
         self.epoch += 1
+        self.ds.newEpoch()
         if self.step_ds:
-            self.ds.step()
+            # self.ds.step()
             self.ds.ifaug = True
         else:
             self.ds.ifaug = False
         # print("now epoch ", self.epoch)
         return super().__iter__()
-
-
-# deprecated
-def readVirusSequences(pos=None, trunc=1498, sample=300, seed=1509):
-    random.seed(seed)
-    print("read positive samples")
-    seqs = {}
-    if pos is None:
-        pos = os.listdir("/home/tyfei/datasets/ion_channel/Interprot/ion_channel/0.99")
-    for i in pos:
-        # print(i)
-        try:
-            if i.endswith(".fas"):
-                # print(i, i[:i.find(".")] in df["Accession"].values)
-                gen = ioutils.readFasta(
-                    "/home/tyfei/datasets/ion_channel/Interprot/ion_channel/0.99/" + i,
-                    truclength=trunc,
-                )
-                seqs[i[: i.find(".")]] = [i for i in gen]
-                # print(i, "success")
-        except:
-            pass
-            # print(i, "failed")
-
-    sequences = []
-    labels = []
-    for i in seqs:
-        sampled = random.sample(seqs[i], min(sample, len(seqs[i])))
-        sequences.extend(sampled)
-        labels.extend([1] * len(sampled))
-
-    print("read negative samples")
-    gen = ioutils.readFasta(
-        "/home/tyfei/datasets/ion_channel/Interprot/Negative_sample/old/decoy_1m_new_rmdup.fasta",
-        truclength=trunc,
-    )
-    seqs["neg"] = [i for i in gen]
-    sampled = random.sample(seqs["neg"], min(len(labels), len(seqs["neg"])))
-    sequences.extend(sampled)
-    labels.extend([0] * len(sampled))
-
-    print("read virus sequences")
-    allvirus = []
-    for i in os.listdir("/home/tyfei/datasets/NCBI_virus/genbank_csv/"):
-        try:
-            allvirus.extend(
-                ioutils.readNCBICsv(
-                    "/home/tyfei/datasets/NCBI_virus/genbank_csv/" + i, truclength=trunc
-                )
-            )
-        except Exception:
-            pass
-
-    return sequences, labels, allvirus
 
 
 MIN_LENGTH = 50
@@ -284,13 +232,24 @@ class ESM3BaseDataset(Dataset):
                 ret = self._cropSequence(ret, s, s + crop)
                 samplelen = len(ret[self.tracks[0]])
 
-        if maskp[0] > 0:
-            num = np.random.binomial(samplelen - 2, maskp[0])
+        # assert samplelen > 45
+
+        if maskp[0] > 0 and samplelen > MIN_LENGTH:
+
+            while True:
+                num = np.random.binomial(samplelen - 2, maskp[0])
+                if samplelen > num + 5:
+                    break
+
             pos = self._generateMaskingPos(num, samplelen)
             if len(pos) > 0:
                 ret = self._maskSequence(ret, pos)
-        if maskp[1] > 0:
-            num = np.random.binomial(samplelen - 2, maskp[0])
+
+        if maskp[1] > 0 and samplelen > MIN_LENGTH:
+            while True:
+                num = np.random.binomial(samplelen - 2, maskp[0])
+                if samplelen > num + 5:
+                    break
             pos = self._generateMaskingPos(num, samplelen, "block")
             if len(pos) > 0:
                 ret = self._maskSequence(ret, pos)
@@ -318,8 +277,10 @@ class ESM3BaseDataset(Dataset):
     def prepareLabels(self, sample, label):
         labels = [label]
         for i in self.required_labels:
-            labels.append(sample["classes"][i])
-
+            if "classes" in sample and i in sample["classes"]:
+                labels.append(sample["classes"][i])
+            else:
+                labels.append(-1)
         return labels
 
 
@@ -334,6 +295,8 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         pos_neg_sample=None,
         tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
         required_labels=[],
+        shuffle=False,
+        update_pnt=True,
     ) -> None:
         """_summary_
 
@@ -348,11 +311,16 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         self.data1 = data1
         self.data2 = data2
         self.data3 = data3
+        self.shuffle = shuffle
+        self.update_pnt = update_pnt
         self.aug = augment
         self.iters = 0
         self.data1order = []
         self.data2order = []
         self.data3order = np.arange(len(data3))
+        self.pnts1 = [0 for i in data1]
+        self.pnts2 = [0 for i in data2]
+        self.pnt3 = 0
         for i in data1:
             self.data1order.append(np.arange(len(i)))
         for i in data2:
@@ -370,6 +338,8 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
                 self.pos_neg_sample[0].append(len(i))
             for i in self.data2:
                 self.pos_neg_sample[1].append(len(i))
+
+        self.shuffleIndex()
 
         self._sample = True
         # self.tracks = tracks
@@ -398,11 +368,27 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
                 t += len(i)
             return t
 
-    def newEpoch(self):
+    def shuffleIndex(self):
         for i in [self.data1order, self.data2order]:
             for j in i:
                 random.shuffle(j)
         random.shuffle(self.data3order)
+
+    def newEpoch(self):
+        print("called new epoch")
+        if self.shuffle:
+            self.shuffleIndex()
+        if self.update_pnt:
+            for i in range(len(self.pos_neg_sample[0])):
+                self.pnts1[i] += self.pos_neg_sample[0][i]
+                while self.pnts1[i] >= len(self.data1order[i]):
+                    self.pnts1[i] -= len(self.data1order[i])
+            for i in range(len(self.pos_neg_sample[1])):
+                self.pnts2[i] += self.pos_neg_sample[1][i]
+                while self.pnts2[i] >= len(self.data2order[i]):
+                    self.pnts2[i] -= len(self.data2order[i])
+            while self.pnt3 >= len(self.data3order):
+                self.pnt3 -= len(self.data3order)
 
     def getOrigin(self):
         ret = []
@@ -415,9 +401,16 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         if self.sample:
             for i in range(len(self.pos_neg_sample[0])):
                 if idx - self.pos_neg_sample[0][i] < 0:
+                    # print("before", self.pnts1, self.pnts1[i])
+                    # self.pnts1[i] = self.pnts1[i] + 1
+                    # print("after", self.pnts1, self.pnts1[i])
+                    # if self.pnts1[i] > len(self.data1order[i]):
+                    #     self.pnts1[i] = 1
                     return (
                         self.data1[i][
-                            self.data1order[i][idx % len(self.data1order[i])]
+                            self.data1order[i][
+                                (self.pnts1[i] + idx) % len(self.data1order[i])
+                            ]
                         ],
                         1,
                     )
@@ -425,9 +418,14 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
                     idx -= self.pos_neg_sample[0][i]
             for i in range(len(self.pos_neg_sample[1])):
                 if idx - self.pos_neg_sample[1][i] < 0:
+                    # self.pnts2[i] += 1
+                    # if self.pnts2[i] > len(self.data2order[i]):
+                    #     self.pnts2[i] = 1
                     return (
                         self.data2[i][
-                            self.data2order[i][idx % len(self.data2order[i])]
+                            self.data2order[i][
+                                (self.pnts2[i] + idx) % len(self.data2order[i])
+                            ]
                         ],
                         0,
                     )
@@ -447,7 +445,10 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         raise KeyError
 
     def _getitemx2(self, idx):
-        return self.data3[self.data3order[idx % len(self.data3)]]
+        # self.pnt3 += 1
+        # if self.pnt3 > len(self.data3order):
+        #     self.pnt3 = 1
+        return self.data3[self.data3order[(self.pnt3 + idx) % len(self.data3order)]]
 
     def __getitem__(self, idx):
         # x1 = {}
@@ -767,84 +768,4 @@ class SeqDataset(Dataset):
         return self.seq.shape[0]
 
     def __getitem__(self, idx):
-
-        return self.seq[idx], self.label[idx]
-
-
-class SeqdataModule(L.LightningDataModule):
-    def __init__(
-        self,
-        trainset=None,
-        testset=None,
-        path="/home/tyfei/datasets/pts/virus",
-        batch_size=12,
-        train_test_split=[0.8, 0.2],
-        seed=1509,
-    ) -> None:
-        super().__init__()
-
-        self.train_test_split = train_test_split
-        self.batch_size = batch_size
-        self.path = path
-        self.seed = seed
-
-        if isinstance(testset, str):
-            self.test_set = torch.load(testset)
-        else:
-            self.test_set = testset
-
-        if isinstance(trainset, str):
-            self.trainset = torch.load(trainset)
-        else:
-            self.trainset = trainset
-
-        # if self.trainset is not None:
-        #     train_set, val_set = torch.utils.data.random_split(trainset, train_test_split)
-
-        #     self.train_set = train_set
-        #     self.val_set = val_set
-
-    def saveDataset(self, path=None):
-        if path is not None:
-            self.path = path
-        torch.save(self.trainset, os.path.join(self.path, "train.pt"))
-        torch.save(self.test_set, os.path.join(self.path, "test.pt"))
-
-    def setup(self, stage):
-        if stage == "fit" or stage == "validate":
-            if self.trainset is None:
-                if os.path.exists(os.path.join(self.path, "train.pt")):
-                    self.trainset = torch.load(os.path.join(self.path, "train.pt"))
-                else:
-                    raise FileExistsError
-
-            if not hasattr(self, "train_set"):
-                torch.manual_seed(self.seed)
-                train_set, val_set = torch.utils.data.random_split(
-                    self.trainset, self.train_test_split
-                )
-                self.train_set = train_set
-                self.val_set = val_set
-
-        if stage == "predict":
-            if self.test_set is None:
-                if os.path.exists(os.path.join(self.path, "test.pt")):
-                    self.test_set = torch.load(os.path.join(self.path, "test.pt"))
-                else:
-                    raise FileExistsError
-
-        if stage == "test":
-            raise NotImplementedError
-
-    def val_dataloader(self):
-        return DataLoader(
-            self.val_set, batch_size=self.batch_size, shuffle=False, num_workers=4
-        )
-
-    def predict_dataloader(self):
-        return DataLoader(self.test_set, batch_size=self.batch_size, shuffle=False)
-
-    def train_dataloader(self):
-        return DataLoader(
-            self.train_set, batch_size=self.batch_size, shuffle=True, num_workers=4
-        )
+        r
