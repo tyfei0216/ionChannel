@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 
 import trainUtils
 import VirusDataset
-
+import pickle
 
 def parseArgs():
     parser = argparse.ArgumentParser()
@@ -53,16 +53,14 @@ def run():
     dataset_basename = dataset_basename[: dataset_basename.find(".")]
 
     print("load dataset")
-    testdata = trainUtils.loadPickle(args.input)
-    test_set = VirusDataset.ESM3MultiTrackDatasetTEST(testdata, tracks=args.tracks)
+    with open(args.input,"rb") as f:
+        testdata = pickle.load(f)
+
+    test_set = VirusDataset.ESM2DatasetTEST(testdata)
     dl = DataLoader(test_set, batch_size=1, shuffle=False)
 
     trainer = L.Trainer(accelerator="gpu", devices=args.devices)
-    result = trainer.predict(model, dl)
-    res = [item[0] for item in result]
-    res_label = pd.DataFrame([item[1] for item in result])
-    res_label.to_csv(os.path.join(args.output, "%s_%s.csv" % (dataset_basename, checkpoint_basename)), index=False)
-
+    res = trainer.predict(model, dl)
     pre = torch.stack(res).numpy()
 
     plt.hist(pre)

@@ -201,7 +201,10 @@ class IonBaseclf(L.LightningModule):
         self.lr_backbone = lr_backbone
 
         self.acc = torchmetrics.Accuracy(task="binary")
-
+        self.recall = torchmetrics.Recall(task="binary")
+        self.precision = torchmetrics.Precision(task="binary")
+        self.f1 = torchmetrics.F1Score(task="binary")
+        
         self.last_train_step = 0
 
         self.training_step_outputs = []
@@ -360,11 +363,16 @@ class IonBaseclf(L.LightningModule):
         y = torch.concatenate([x["true_label"] for x in outputs])
 
         outputs.clear()
-        return loss, self.acc(scores, y)
+        acc = self.acc(scores, y)
+        precision = self.precision(scores, y)
+        recall = self.recall(scores, y)
+        f1 = self.f1(scores, y)
+
+        return loss, acc,precision,recall,f1
 
     def on_training_epoch_end(self):
 
-        loss, acc = self._common_epoch_end(self.training_step_outputs)
+        loss, acc,precision,recall,f1 = self._common_epoch_end(self.training_step_outputs)
 
         print("finish training epoch, loss %f, acc %f" % (loss, acc))
         self.log_dict(
@@ -385,8 +393,6 @@ class IonBaseclf(L.LightningModule):
 
         loss, loss1, loss2, y_pre, y = self._common_training_step(batch)
 
-        acc = self.acc(y_pre.squeeze(-1), y)
-
         # self.log_dict(
         #     {"predict loss": loss1.item(), "adversial loss": loss2.item(), "acc": acc},
         #     logger=True,
@@ -399,12 +405,15 @@ class IonBaseclf(L.LightningModule):
         return loss
 
     def on_validation_epoch_end(self):
-        loss, acc = self._common_epoch_end(self.validation_step_outputs)
+        loss, acc,precision,recall,f1 = self._common_epoch_end(self.validation_step_outputs)
         print("finish validating, loss %f, acc %f" % (loss, acc))
         self.log_dict(
             {
                 "validate_loss": loss,
                 "validate_acc": acc,
+                "validate_precision" :precision,
+                "validate_recall" :recall,
+                "validate_f1" :f1,
             },
             on_step=False,
             logger=True,
@@ -448,11 +457,21 @@ class IonBaseclf(L.LightningModule):
             y = None
         # print(X1, len)
         pre, _ = self(X1)
-        pre = pre.squeeze()
-        if y is None:
-            return pre
-        else:
-            return pre, y
+        try:
+            pre,pre_label = pre
+            pre = pre.squeeze()
+            pre_label = pre_label.squeeze()
+            if y is None:
+                return pre,[item.item() for item in pre_label]
+            else:
+                return pre,[item.item() for item in pre_label], y
+        except:
+            pre = pre.squeeze()
+            if y is None:
+                return pre
+            else:
+                return pre, y
+
 
     def configure_optimizers(self):
         print("get training optimizer")
@@ -627,12 +646,11 @@ class IonclfESM2(IonBaseclf):
         )
 
         self.save_hyperparameters(ignore=["esm_model"])
-
         self.num_layers = esm_model.num_layers
         self.embed_dim = esm_model.embed_dim
-        self.attention_heads = esm_model.attention_heads
+        # self.attention_heads = esm_model.attention_heads
         self.alphabet = esm.data.Alphabet.from_architecture("ESM-1b")
-        self.alphabet_size = len(self.alphabet)
+        # self.alphabet_size = len(self.alphabet)
 
         self.p = p
 
@@ -668,8 +686,7 @@ class IonclfESM2(IonBaseclf):
         #     self.fixParameters(unfix)
 
     def forward(self, x):
-        representations = self.esm_model(x, repr_layers=[self.num_layers])
-
+        representations = self.esm_model(x,repr_layers=[self.num_layers], return_contacts=True)
         x = representations["representations"][self.num_layers][:, 0]
         x1 = self.reverse(x)
         pre = self.cls(x)

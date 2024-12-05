@@ -28,7 +28,7 @@ def run():
     print("fetch config from ", os.path.join(path, "config.json"))
     print("--------")
     print("config: ")
-    print(json_formatted_str)
+    # print(json_formatted_str)
     print("--------")
     print("using devices ", args.devices)
     print("using strategy ", args.strategy)

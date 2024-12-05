@@ -13,19 +13,25 @@ from torch.utils import tensorboard
 
 import callbacks
 import models
+from Bio import SeqIO
 
 
 def loadesm2(configs):
     import esm
 
-    model, _ = esm.pretrained.esm2_t12_35M_UR50D()
+    model, _ = esm.pretrained.esm2_t33_650M_UR50D()
     model = models.fixParameters(model, unfix=configs["pretrain_model"]["unfix_layers"])
+    q = [
+        "transformer.blocks." + str(s) + "."
+        for s in configs["pretrain_model"]["add_lora"]
+    ]
     model = models.addlora(
         model,
-        layers=configs["pretrain_model"]["add_lora"],
+        layers=q,
         ranks=configs["pretrain_model"]["rank"],
         alphas=configs["pretrain_model"]["alpha"],
     )
+
     return model
 
 
@@ -57,7 +63,7 @@ def loadPretrainModel(configs) -> nn.Module:
     if "pretrain_model" in configs:
         model = "esm2"
         if "model" in configs["pretrain_model"]:
-            model = "esm3"
+            model = configs["pretrain_model"]["model"]
     else:
         return None
 
@@ -84,9 +90,51 @@ def loadPickle(path):
 
 def loadDatasetesm2(configs):
     import VirusDataset
+    import re
 
-    ds = VirusDataset.SeqdataModule(batch_size=configs["train"]["batch_size"])
+    pos_datasets = []
+    neg_datasets = []
+    test_datasets = []
+
+
+    sample_size = configs["dataset"]["dataset_train_sample"]
+    assert len(configs["dataset"]["pos"]) == len(sample_size[0])
+    assert len(configs["dataset"]["neg"]) == len(sample_size[1])
+
+    sample_size = configs["dataset"]["dataset_val_sample"]
+    assert len(configs["dataset"]["pos"]) == len(sample_size[0])
+    assert len(configs["dataset"]["neg"]) == len(sample_size[1])
+
+    for i in configs["dataset"]["pos"]:
+        data = []
+        with open(i,"rb") as f:
+            data = pickle.load(f)
+        pos_datasets.append(list(data))
+
+    for i in configs["dataset"]["neg"]:
+        with open(i,"rb") as f:
+            data = pickle.load(f)
+        neg_datasets.append(data)
+
+    for i in configs["dataset"]["test"]:
+        with open(i,"rb") as f:
+            data = pickle.load(f)
+        test_datasets.append(data)
+
+    
+    ds = VirusDataset.ESM2DataModule(
+        pos_datasets,
+        neg_datasets,
+        test_datasets,
+        batch_size = configs["train"]["batch_size"],
+        pos_neg_train=configs["dataset"]["dataset_train_sample"],
+        pos_neg_val=configs["dataset"]["dataset_val_sample"],
+        train_test_ratio=configs["dataset"]["train_test_ratio"],
+        required_labels=configs["dataset"]["required_labels"]
+    )
     return ds
+
+
 
 
 def loadDatasetesm3(configs):
@@ -115,6 +163,7 @@ def loadDatasetesm3(configs):
 
     step_points = configs["augmentation"]["step_points"]
     crop = configs["augmentation"]["crop"]
+    crop_type = configs["augmentation"]["crop_type"]
     maskp = [
         (i, j)
         for i, j in zip(
@@ -122,7 +171,7 @@ def loadDatasetesm3(configs):
         )
     ]
     aug = VirusDataset.DataAugmentation(
-        step_points, maskp, crop, lens, tracks=configs["dataset"]["tracks"]
+        step_points, maskp, crop,crop_type, lens, tracks=configs["dataset"]["tracks"]
     )
 
     ds1 = VirusDataset.ESM3MultiTrackDataset(
@@ -155,7 +204,7 @@ def loadBalancedDatasetesm3(configs):
     for i in configs["dataset"]["pos"]:
         data = loadPickle(i)
         pos_datasets.append(data)
-
+    print(len(pos_datasets))
     for i in configs["dataset"]["neg"]:
         data = loadPickle(i)
         neg_datasets.append(data)
@@ -168,15 +217,22 @@ def loadBalancedDatasetesm3(configs):
 
     step_points = configs["augmentation"]["step_points"]
     crop = configs["augmentation"]["crop"]
+
+    try:
+        crop_type = configs["augmentation"]["crop_type"]
+    except:
+        crop_type = 'TMHMM'
+
     maskp = [
         (i, j)
         for i, j in zip(
             configs["augmentation"]["maskp"], configs["augmentation"]["maskpc"]
         )
     ]
+    
     tracks = configs["augmentation"]["tracks"]
 
-    aug = VirusDataset.DataAugmentation(step_points, maskp, crop, lens, tracks)
+    aug = VirusDataset.DataAugmentation(step_points, maskp, crop,crop_type, lens, tracks)
 
     if "required_labels" not in configs["dataset"]:
         configs["dataset"]["required_labels"] = []
@@ -257,8 +313,10 @@ def buildesm3Model(configs, model):
     assert len(configs["model"]["additional_label_weights"]) == len(
         configs["dataset"]["required_labels"]
     )
+
     if "lr_backbone" not in configs["model"]:
         configs["model"]["lr_backbone"] = None
+
     clsmodel = models.IonclfESM3(
         model,
         step_lambda=configs["model"]["lambda_adapt"],

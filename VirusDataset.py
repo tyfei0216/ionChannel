@@ -35,6 +35,60 @@ class MyDataLoader(DataLoader):
         return super().__iter__()
 
 
+# deprecated
+def readVirusSequences(pos=None, trunc=1498, sample=300, seed=1509):
+    random.seed(seed)
+    print("read positive samples")
+    seqs = {}
+    if pos is None:
+        pos = os.listdir("/home/tyfei/datasets/ion_channel/Interprot/ion_channel/0.99")
+    for i in pos:
+        # print(i)
+        try:
+            if i.endswith(".fas"):
+                # print(i, i[:i.find(".")] in df["Accession"].values)
+                gen = ioutils.readFasta(
+                    "/home/tyfei/datasets/ion_channel/Interprot/ion_channel/0.99/" + i,
+                    truclength=trunc,
+                )
+                seqs[i[: i.find(".")]] = [i for i in gen]
+                # print(i, "success")
+        except:
+            pass
+            # print(i, "failed")
+
+    sequences = []
+    labels = []
+    for i in seqs:
+        sampled = random.sample(seqs[i], min(sample, len(seqs[i])))
+        sequences.extend(sampled)
+        labels.extend([1] * len(sampled))
+
+    print("read negative samples")
+    gen = ioutils.readFasta(
+        "/home/tyfei/datasets/ion_channel/Interprot/Negative_sample/old/decoy_1m_new_rmdup.fasta",
+        truclength=trunc,
+    )
+    seqs["neg"] = [i for i in gen]
+    sampled = random.sample(seqs["neg"], min(len(labels), len(seqs["neg"])))
+    sequences.extend(sampled)
+    labels.extend([0] * len(sampled))
+
+    print("read virus sequences")
+    allvirus = []
+    for i in os.listdir("/home/tyfei/datasets/NCBI_virus/genbank_csv/"):
+        try:
+            allvirus.extend(
+                ioutils.readNCBICsv(
+                    "/home/tyfei/datasets/NCBI_virus/genbank_csv/" + i, truclength=trunc
+                )
+            )
+        except Exception:
+            pass
+
+    return sequences, labels, allvirus
+
+
 MIN_LENGTH = 50
 
 
@@ -44,6 +98,7 @@ class DataAugmentation:
         step_points: list,
         maskp: list,
         crop: list,
+        crop_type: str,
         croprange: list,
         tracks: list = None,
     ) -> None:
@@ -55,6 +110,9 @@ class DataAugmentation:
         self.step_points = step_points
         self.maskp = maskp
         self.crop = crop
+        self.crop_type = crop_type
+        if self.crop_type == None:
+            self.crop_type = "tmhmm"
         self.croprange = croprange
 
     def _getSettings(self, step):
@@ -88,8 +146,8 @@ class DataAugmentation:
                 sampledlen = int(sampledlen * np.random.uniform(0.8, 1.2))
                 sampledlen = MIN_LENGTH if sampledlen < MIN_LENGTH else sampledlen
                 sampledlen = min(sampledlen, seqlen - 2)
-                return maskp, sampledlen, rettrack
-        return maskp, -1, rettrack
+                return maskp, sampledlen, rettrack,self.crop_type
+        return maskp, -1, rettrack,self.crop_type
 
 
 class ESM3BaseDataset(Dataset):
@@ -211,29 +269,42 @@ class ESM3BaseDataset(Dataset):
         t = random.sample(can_pick, 1)[0]
         return t
 
-    def _augmentsample(self, sample, maskp, crop, tracks=None):
+    def _augmentsample(self, sample, maskp, crop,crop_type, tracks=None):
         samplelen = len(sample[self.tracks[0]])
         ret = {}
         for i in self.tracks:
             ret[i] = sample[i].copy()
         if crop > self.min_length:
-            t = self.checkAndPickTmm(sample)
-            if t is None:
+            if crop_type=="random":
                 s = random.randint(1, samplelen - crop - 1)
                 ret = self._cropSequence(ret, s, s + crop)
                 samplelen = len(ret[self.tracks[0]])
             else:
-                if crop < (t[1] - t[0]):
-                    crop = t[1] - t[0]
+                t = self.checkAndPickTmm(sample)
+                if t is None:
+                    s = random.randint(1, samplelen - crop - 1)
+                    ret = self._cropSequence(ret, s, s + crop)
+                    samplelen = len(ret[self.tracks[0]])
+                else:
+                    if crop < (t[1] - t[0]):
+                        crop = t[1] - t[0]
 
-                s = random.randint(
-                    max(1, t[0] - (crop - t[1] + t[0])), min(t[0], samplelen - crop - 1)
-                )
-                ret = self._cropSequence(ret, s, s + crop)
-                samplelen = len(ret[self.tracks[0]])
+                    s = random.randint(
+                        max(1, t[0] - (crop - t[1] + t[0])), min(t[0], samplelen - crop - 1)
+                    )
+                    ret = self._cropSequence(ret, s, s + crop)
+                    samplelen = len(ret[self.tracks[0]])
 
-        # assert samplelen > 45
-
+        # if maskp[0] > 0:
+        #     num = np.random.binomial(samplelen - 2, maskp[0])
+        #     pos = self._generateMaskingPos(num, samplelen)
+        #     if len(pos) > 0:
+        #         ret = self._maskSequence(ret, pos)
+        # if maskp[1] > 0:
+        #     num = np.random.binomial(samplelen - 2, maskp[0])
+        #     pos = self._generateMaskingPos(num, samplelen, "block")
+        #     if len(pos) > 0:
+        #         ret = self._maskSequence(ret, pos)
         if maskp[0] > 0 and samplelen > MIN_LENGTH:
 
             while True:
@@ -264,10 +335,10 @@ class ESM3BaseDataset(Dataset):
 
     def processSample(self, sample):
         if self.aug is not None and self.ifaug:
-            maskp, crop, tracks = self.aug.getAugmentation(
+            maskp, crop, tracks,crop_type = self.aug.getAugmentation(
                 len(sample[self.tracks[0]]), self.step_cnt
             )
-            x1 = self._augmentsample(sample, maskp, crop, tracks)
+            x1 = self._augmentsample(sample, maskp, crop,crop_type, tracks)
         else:
             x1 = {}
             for i in self.tracks:
@@ -710,62 +781,284 @@ class ESM3datamodule(L.LightningDataModule):
             self.testset, False, batch_size=self.batch_size, shuffle=True, num_workers=4
         )
 
+class ESM2Dataset(Dataset):
+    def __init__(
+        self,
+        data1,
+        data2,
+        data3,
+        augment: DataAugmentation = None,
+        shuffle=False,
+        pos_neg_sample=None,
+        update_pnt=True,
+        required_labels = []
+    ) -> None:
+        super().__init__()
+        self.data1 = data1
+        self.data2 = data2
+        self.data3 = data3
+        self.shuffle = shuffle
+        self.update_pnt = update_pnt
+        self.iters = 0
+        self.aug = augment
+        self.data1order = []
+        self.data2order = []
+        self.data3order = np.arange(len(data3))
+        self.pnts1 = [0 for i in data1]
+        self.pnts2 = [0 for i in data2]
+        self.pnt3 = 0
+        self.step_cnt = 0
+        self.required_labels = required_labels
 
-class SeqDataset2(Dataset):
-    def __init__(self, seq, label, seqtest):
+        for i in data1:
+            self.data1order.append(np.arange(len(i)))
+        for i in data2:
+            self.data2order.append(np.arange(len(i)))
 
-        if not isinstance(seq, torch.Tensor):
-            seq = torch.tensor(seq).long()
-        self.seq = seq
+        self.ifaug = False
 
-        if not isinstance(label, torch.Tensor):
-            label = torch.tensor(label).long()
-        self.label = label
+        if pos_neg_sample is not None:
+            self.pos_neg_sample = pos_neg_sample
+            for i, j in zip(self.pos_neg_sample, [self.data1, self.data2]):
+                for k in range(len(i)):
+                    if i[k] < 0:
+                        i[k] = len(j[k])
+        else:
+            self.pos_neg_sample = [[], []]
+            for i in self.data1:
+                self.pos_neg_sample[0].append(len(i))
+            for i in self.data2:
+                self.pos_neg_sample[1].append(len(i))
 
-        if not isinstance(seqtest, torch.Tensor):
-            seqtest = torch.tensor(seqtest).long()
-        self.seqtest = seqtest
-
-        self.seqlen = seq.shape[0]
-        self.seqtestlen = seqtest.shape[0]
+        self.shuffleIndex()
+        self._sample = True
+    @property
+    def sample(self):
+        return self._sample
 
     def __len__(self):
-        return max(self.seqlen, self.seqtestlen)
+        if self._sample:
+            t = 0
+            for i in self.pos_neg_sample:
+                for j in i:
+                    t += j
+            return t
+        else:
+            t = 0
+            for i in self.data1:
+                t += len(i)
+            for i in self.data2:
+                t += len(i)
+            return t
+
+    def step(self):
+        self.step_cnt += 1
+
+    def shuffleIndex(self):
+        for i in [self.data1order, self.data2order]:
+            for j in i:
+                random.shuffle(j)
+        random.shuffle(self.data3order)
+
+    def newEpoch(self):
+        print("called new epoch")
+        if self.shuffle:
+            self.shuffleIndex()
+        if self.update_pnt:
+            for i in range(len(self.pos_neg_sample[0])):
+                self.pnts1[i] += self.pos_neg_sample[0][i]
+                while self.pnts1[i] >= len(self.data1order[i]):
+                    self.pnts1[i] -= len(self.data1order[i])
+            for i in range(len(self.pos_neg_sample[1])):
+                self.pnts2[i] += self.pos_neg_sample[1][i]
+                while self.pnts2[i] >= len(self.data2order[i]):
+                    self.pnts2[i] -= len(self.data2order[i])
+            while self.pnt3 >= len(self.data3order):
+                self.pnt3 -= len(self.data3order)
+    def _getitemx1(self, idx):
+        if self.sample:
+            for i in range(len(self.pos_neg_sample[0])):
+                if idx - self.pos_neg_sample[0][i] < 0:
+                    return (
+                        self.data1[i][
+                            self.data1order[i][(self.pnts1[i] + idx) % len(self.data1order[i])]],
+                        1)
+                else:
+                    idx -= self.pos_neg_sample[0][i]
+            for i in range(len(self.pos_neg_sample[1])):
+                if idx - self.pos_neg_sample[1][i] < 0:
+                    return (
+                        self.data2[i][
+                            self.data2order[i][
+                                (self.pnts2[i] + idx) % len(self.data2order[i])
+                            ]
+                        ],
+                        0,
+                    )
+                else:
+                    idx -= self.pos_neg_sample[1][i]
+        else:
+            for i in self.data1:
+                if idx - len(i) < 0:
+                    return i[idx], 1
+                else:
+                    idx -= len(i)
+            for i in self.data2:
+                if idx - len(i) < 0:
+                    return i[idx], 0
+                else:
+                    idx -= len(i)
+        raise KeyError
+
+    def prepareLabels(self, sample, label):
+        labels = [label]
+        for i in self.required_labels:
+            if "classes" in sample and i in sample["classes"]:
+                labels.append(sample["classes"][i])
+            else:
+                labels.append(-1)
+        return labels
+
 
     def __getitem__(self, idx):
-        return (
-            self.seq[idx % self.seqlen],
-            self.label[idx % self.seqlen],
-            self.seqtest[idx % self.seqtestlen],
+
+        x1, label = self._getitemx1(idx)
+
+        labels = self.prepareLabels(x1, label)
+
+        x2 = self.data3[self.data3order[(self.pnt3 + idx) % len(self.data3order)]][0]
+        return x1, torch.tensor(labels), x2
+
+
+class ESM2DatasetTEST(Dataset):
+    def __init__(
+        self,
+        data1,
+        augment: DataAugmentation = None,
+    ) -> None:
+        super().__init__()
+        self.data1 = data1
+        self.aug = augment
+
+    def __len__(self):
+        return len(self.data1)
+
+    def step(self):
+        super().step()
+
+    def __getitem__(self, idx):
+        x1 = self.data1[idx]
+        return x1
+
+
+class ESM2DataModule(L.LightningDataModule):
+    def __init__(
+        self,
+        data1,
+        data2,
+        data3,
+        batch_size=1,
+        pos_neg_train = [],
+        pos_neg_val = [],
+        aug=None,
+        train_test_ratio=[0.85, 0.15],
+        seed=1509,
+        required_labels=[],
+    ):
+        super().__init__()
+        self.value = 0
+        self.data3 = data3
+        self.batch_size = batch_size
+        self.seed = seed
+        self.required_labels = []
+
+        from sklearn.model_selection import train_test_split
+
+        self.traindata1 = []
+        self.traindata2 = []
+        self.train_indices1 = []
+        self.train_indices2 = []
+        self.valdata1 = []
+        self.valdata2 = []
+        self.val_indices1 = []
+        self.val_indices2 = []
+
+        for i in data1:
+            d1, v1, i1, i2 = train_test_split(
+                i,
+                range(len(i)),
+                train_size=train_test_ratio[0],
+                random_state=self.seed,
+            )
+            self.traindata1.append(d1)
+            self.valdata1.append(v1)
+            self.train_indices1.append(i1)
+            self.val_indices1.append(i2)
+
+
+        for i in data2:
+            d2, v2, i1, i2 = train_test_split(
+                i,
+                range(len(i)),
+                train_size=train_test_ratio[0],
+                random_state=self.seed,
+            )
+            self.traindata2.append(d2)
+            self.valdata2.append(v2)
+            self.train_indices2.append(i1)
+            self.val_indices2.append(i2)
+
+
+        torch.manual_seed(self.seed)
+
+        self.train_set = ESM2Dataset(
+            self.traindata1,
+            self.traindata2,
+            self.data3,
+            augment=aug,
+            pos_neg_sample=pos_neg_train
         )
 
+        self.val_set = ESM2Dataset(
+            self.valdata1,
+            self.valdata2,
+            self.data3,
+            augment=aug,
+            pos_neg_sample=pos_neg_val
+        )
 
-class TestDataset(Dataset):
-    def __init__(self, seq):
-        if not isinstance(seq, torch.Tensor):
-            seq = torch.tensor(seq).long()
-        self.seq = seq
-
-    def __len__(self):
-        return self.seq.shape[0]
-
-    def __getitem__(self, idx):
-
-        return self.seq[idx]
+        self.test_set = ESM2DatasetTEST(self.data3)
 
 
-class SeqDataset(Dataset):
-    def __init__(self, seq, label):
-        if not isinstance(seq, torch.Tensor):
-            seq = torch.tensor(seq).long()
-        self.seq = seq
+    def train_dataloader(self):
+        self.value += 1
+        print("get train loader")
+        return MyDataLoader(
+            self.train_set,
+            True,
+            shuffle=True,
+            batch_size=self.batch_size,
+            num_workers=4,
+        )
 
-        if not isinstance(label, torch.Tensor):
-            label = torch.tensor(label).long()
-        self.label = label
+    def val_dataloader(self):
+        self.value += 1
+        print("get val loader")
+        return MyDataLoader(
+            self.val_set,
+            False,
+            shuffle=False,
+            batch_size=self.batch_size,
+            num_workers=4,
+        )
 
-    def __len__(self):
-        return self.seq.shape[0]
-
-    def __getitem__(self, idx):
-        r
+    def predict_dataloader(self):
+        self.value += 1
+        print("get predict loader")
+        return MyDataLoader(
+            self.test_set,
+            False,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,
+        )
