@@ -94,6 +94,7 @@ class Linearcls(nn.Module):
         x = F.gelu(x)
         x = self.l3(x)
         # print("lin", x.shape)
+        return x
         if self.output_dim == 1:
             return x
         else:
@@ -247,7 +248,7 @@ class IonBaseclf(L.LightningModule):
             loss1_a = F.binary_cross_entropy(
                 y_pre2,
                 y2.float(),
-                weight=self.additional_label_weights,
+                weight=q,  # self.additional_label_weights,
             )
             # print("finish loss")
             y_pre = y_pre1  # .squeeze(-1)
@@ -585,7 +586,7 @@ class IonclfESM3(IonBaseclf):
         if len(self.additional_label_weights) == 0:
             pre = F.sigmoid(pre)
         else:
-            pre = (F.sigmoid(pre[0]), F.sigmoid(pre[1]))
+            pre = (F.sigmoid(pre[:, 0]), F.sigmoid(pre[:, 1:]))
 
         y = self.dis(x1)
         y = F.sigmoid(y)
@@ -679,6 +680,123 @@ class IonclfESM2(IonBaseclf):
         y = F.sigmoid(y)
 
         return pre, y
+
+
+class IonclfESMC(IonBaseclf):
+    def __init__(
+        self,
+        esm_model,
+        embed_dim=1152,
+        addadversial=True,
+        lamb=0.1,
+        lr=5e-4,
+        lr_backbone=None,
+        step_lambda=True,
+        step=1.5,
+        max_lambda=6,
+        thres=0.95,
+        weight_decay=0.005,
+        addition_label_weights=[],
+        weight_step=1.5,
+        weight_max=6,
+        clf="linear",
+        clf_params={},
+        addition_clf="linear",
+        addition_clf_params={},
+        dis="linear",
+        dis_params={},
+    ) -> None:
+        super().__init__(
+            addadversial=addadversial,
+            lamb=lamb,
+            lr=lr,
+            lr_backbone=lr_backbone,
+            step_lambda=step_lambda,
+            step=step,
+            max_lambda=max_lambda,
+            thres=thres,
+            weight_decay=weight_decay,
+            additional_label_weights=addition_label_weights,
+        )
+
+        self.embed_dim = embed_dim
+        self.addadversial = addadversial
+        self.reverse = GradientReversal(1)
+
+        self.esm_model = esm_model
+
+        assert clf in ["linear", "cnn"]
+        assert dis in ["linear", "cnn"]
+
+        if clf == "cnn":
+            self.clf = CNNcls(**clf_params)
+        else:
+            self.clf = Linearcls(**clf_params)
+
+        if dis == "cnn":
+            self.dis = CNNcls(**dis_params)
+        else:
+            self.dis = Linearcls(**dis_params)
+
+        if addition_clf is not None:
+            assert addition_clf in ["linear", "cnn"]
+            self.additional_clf = Linearcls(**addition_clf_params)
+        else:
+            self.additional_clf = None
+
+        self.weight_step = weight_step
+        self.weight_max = weight_max
+
+    def forward(self, input_dict):
+
+        # print(input_dict)
+
+        assert "seq_t" in input_dict
+        inputs = input_dict["seq_t"]
+        if len(inputs.size()) == 1:
+            inputs = inputs.unsqueeze(0)
+
+        # print(inputs, inputs.shape)
+
+        representations = self.esm_model(
+            sequence_tokens=inputs,
+        )
+
+        x = representations.embeddings  # [:, 0]
+        x = x.to(torch.float32)
+        x1 = self.reverse(x)
+        x1 = x
+        pre = self.clf(x)
+        if len(self.additional_label_weights) == 0:
+            pre = F.sigmoid(pre)
+        else:
+            additionalpre = self.additional_clf(x)
+            pre = (F.sigmoid(pre), F.sigmoid(additionalpre))
+
+        y = self.dis(x1)
+        y = F.sigmoid(y)
+
+        return pre, y
+
+    def on_save_checkpoint(self, checkpoint):
+        backbones = []
+        for i, j in self.named_parameters():
+            if "esm" in i and not j.requires_grad:
+                backbones.append(i)
+        for i in backbones:
+            del checkpoint["state_dict"][i]
+
+    def updateLambda(self, acc):
+        super().updateLambda(acc)
+        if self.weight_step > 1.0:
+            if self.thres[0] > acc:
+                if (
+                    torch.sum(self.additional_label_weights) * self.weight_step
+                    < self.weight_max
+                ):
+                    self.additional_label_weights = (
+                        self.additional_label_weights * self.weight_step
+                    )
 
 
 class SelfAttention(nn.Module):
@@ -844,11 +962,11 @@ def fixParameters(esm_model, unfix=["9", "10", "11"]):
 
 
 class LoRALayer(torch.nn.Module):
-    def __init__(self, in_dim, out_dim, rank, alpha):
+    def __init__(self, in_dim, out_dim, rank, alpha, dtype=torch.float):
         super().__init__()
-        std_dev = 1 / torch.sqrt(torch.tensor(rank).float())
-        self.A = torch.nn.Parameter(torch.randn(in_dim, rank) * std_dev)
-        self.B = torch.nn.Parameter(torch.zeros(rank, out_dim) * std_dev)
+        std_dev = 1 / torch.sqrt(torch.tensor(rank).to(dtype))
+        self.A = torch.nn.Parameter(torch.randn(in_dim, rank, dtype=dtype) * std_dev)
+        self.B = torch.nn.Parameter(torch.zeros(rank, out_dim, dtype=dtype) * std_dev)
         self.alpha = alpha
 
     def forward(self, x):
@@ -857,10 +975,12 @@ class LoRALayer(torch.nn.Module):
 
 
 class LinearWithLoRA(torch.nn.Module):
-    def __init__(self, linear, rank, alpha):
+    def __init__(self, linear, rank, alpha, dtype=torch.float):
         super().__init__()
         self.linear = linear
-        self.lora = LoRALayer(linear.in_features, linear.out_features, rank, alpha)
+        self.lora = LoRALayer(
+            linear.in_features, linear.out_features, rank, alpha, dtype
+        )
 
     def forward(self, x):
         return self.linear(x) + self.lora(x)
@@ -873,7 +993,7 @@ def _set_submodule(submodule, module_path, new_module):
     setattr(submodule, tokens[-1], new_module)
 
 
-def addlora(esm_model, layers, ranks, alphas):
+def addlora(esm_model, layers, ranks, alphas, dtype=torch.float):
     # if layers is None:
     #     layers = [str(i) for i in range(12)]
     for i, j in esm_model.named_modules():
@@ -887,6 +1007,6 @@ def addlora(esm_model, layers, ranks, alphas):
                     _set_submodule(
                         esm_model,
                         i,
-                        LinearWithLoRA(j, rank, alpha),
+                        LinearWithLoRA(j, rank, alpha, dtype=dtype),
                     )
     return esm_model

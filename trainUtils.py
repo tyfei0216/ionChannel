@@ -47,9 +47,30 @@ def loadesm3(configs):
     return model
 
 
+def loadesmc(configs):
+    from esm.models.esmc import ESMC
+
+    model = ESMC.from_pretrained(configs["pretrain_model"]["model"]).cpu()
+    q = [
+        "transformer.blocks." + str(s) + "."
+        for s in configs["pretrain_model"]["add_lora"]
+    ]
+    model = models.fixParameters(model, unfix=configs["pretrain_model"]["unfix_layers"])
+    model = models.addlora(
+        model,
+        layers=q,
+        ranks=configs["pretrain_model"]["rank"],
+        alphas=configs["pretrain_model"]["alpha"],
+        dtype=torch.bfloat16,
+    )
+    return model
+
+
 LOAD_PRETRAIN = {
     "esm2": loadesm2,
     "esm3": loadesm3,
+    "esmc_600m": loadesmc,
+    "esmc_300m": loadesmc,
 }
 
 
@@ -57,7 +78,7 @@ def loadPretrainModel(configs) -> nn.Module:
     if "pretrain_model" in configs:
         model = "esm2"
         if "model" in configs["pretrain_model"]:
-            model = "esm3"
+            model = configs["pretrain_model"]["model"]
     else:
         return None
 
@@ -257,6 +278,7 @@ def buildesm3Model(configs, model):
     assert len(configs["model"]["additional_label_weights"]) == len(
         configs["dataset"]["required_labels"]
     )
+
     if "lr_backbone" not in configs["model"]:
         configs["model"]["lr_backbone"] = None
     clsmodel = models.IonclfESM3(
@@ -279,10 +301,63 @@ def buildesm3Model(configs, model):
     return clsmodel
 
 
+def buildesm3cModel(configs, model):
+    if "clf_params" not in configs["model"]:
+        configs["model"]["clf_params"] = {}
+    if "dis_params" not in configs["model"]:
+        configs["model"]["dis_params"] = {}
+
+    if "addition_clf" not in configs["model"]:
+        configs["model"]["addition_clf"] = None
+        configs["model"]["addition_clf_params"] = None
+    elif "addition_clf_params" not in configs["model"]:
+        configs["model"]["addition_clf_params"] = {}
+
+    if "additional_label_weights" not in configs["model"]:
+        configs["model"]["additional_label_weights"] = []
+
+    assert len(configs["model"]["additional_label_weights"]) == len(
+        configs["dataset"]["required_labels"]
+    )
+
+    if "lr_backbone" not in configs["model"]:
+        configs["model"]["lr_backbone"] = None
+
+    if "weight_max" not in configs["model"]:
+        configs["model"]["weight_max"]
+
+    if "weight_step" not in configs["model"]:
+        configs["model"]["weight_step"] = 1
+
+    clsmodel = models.IonclfESMC(
+        model,
+        step_lambda=configs["model"]["lambda_adapt"],
+        lamb=configs["model"]["lambda_ini"],
+        embed_dim=configs["model"]["embed_dim"],
+        max_lambda=configs["model"]["max_lambda"],
+        step=configs["model"]["lambda_step"],
+        thres=configs["model"]["lambda_thres"],
+        lr=configs["model"]["lr"],
+        lr_backbone=configs["model"]["lr_backbone"],
+        clf=configs["model"]["clf"],
+        clf_params=configs["model"]["clf_params"],
+        addition_clf=configs["model"]["addition_clf"],
+        addition_clf_params=configs["model"]["addition_clf_params"],
+        dis=configs["model"]["dis"],
+        dis_params=configs["model"]["dis_params"],
+        weight_decay=configs["model"]["weight_decay"],
+        addition_label_weights=configs["model"]["additional_label_weights"],
+        weight_max=configs["model"]["weight_max"],
+        weight_step=configs["model"]["weight_step"],
+    )
+    return clsmodel
+
+
 BUILD_MODEL = {
     "simple": buildSimpleModel,
     "esm2": buildesm2Model,
     "esm3": buildesm3Model,
+    "esmc": buildesm3cModel,
 }
 
 MODEL_CLS = {

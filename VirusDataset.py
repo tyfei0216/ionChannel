@@ -145,9 +145,11 @@ class ESM3BaseDataset(Dataset):
                     case "structure_t":
                         return C.STRUCTURE_MASK_TOKEN
                     case "sasa_t":
-                        return C.SASA_UNK_TOKEN
+                        # return C.SASA_UNK_TOKEN
+                        return 2
                     case "second_t":
-                        return C.SS8_UNK_TOKEN
+                        # return C.SS8_UNK_TOKEN
+                        return 2
                     case _:
                         raise ValueError
             case "pad":
