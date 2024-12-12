@@ -32,7 +32,7 @@ def loadesm2(configs):
 def loadesm3(configs):
     from esm.models.esm3 import ESM3
 
-    model = ESM3.from_pretrained("esm3_sm_open_v1").cpu()
+    model = ESM3.from_pretrained("esm3_sm_open_v1", torch.device("cpu"))  # .cpu()
     q = [
         "transformer.blocks." + str(s) + "."
         for s in configs["pretrain_model"]["add_lora"]
@@ -50,7 +50,9 @@ def loadesm3(configs):
 def loadesmc(configs):
     from esm.models.esmc import ESMC
 
-    model = ESMC.from_pretrained(configs["pretrain_model"]["model"]).cpu()
+    model = ESMC.from_pretrained(
+        configs["pretrain_model"]["model"], torch.device("cpu")
+    )  # .cpu()
     q = [
         "transformer.blocks." + str(s) + "."
         for s in configs["pretrain_model"]["add_lora"]
@@ -61,7 +63,7 @@ def loadesmc(configs):
         layers=q,
         ranks=configs["pretrain_model"]["rank"],
         alphas=configs["pretrain_model"]["alpha"],
-        dtype=torch.bfloat16,
+        # dtype=torch.bfloat16,
     )
     return model
 
@@ -278,6 +280,8 @@ def buildesm3Model(configs, model):
     assert len(configs["model"]["additional_label_weights"]) == len(
         configs["dataset"]["required_labels"]
     )
+    if "pos_weights" not in configs["model"]:
+        configs["model"]["pos_weights"] = None
 
     if "lr_backbone" not in configs["model"]:
         configs["model"]["lr_backbone"] = None
@@ -316,6 +320,9 @@ def buildesm3cModel(configs, model):
     if "additional_label_weights" not in configs["model"]:
         configs["model"]["additional_label_weights"] = []
 
+    if "pos_weights" not in configs["model"]:
+        configs["model"]["pos_weights"] = None
+
     assert len(configs["model"]["additional_label_weights"]) == len(
         configs["dataset"]["required_labels"]
     )
@@ -347,6 +354,7 @@ def buildesm3cModel(configs, model):
         dis_params=configs["model"]["dis_params"],
         weight_decay=configs["model"]["weight_decay"],
         addition_label_weights=configs["model"]["additional_label_weights"],
+        pos_weights=configs["model"]["pos_weights"],
         weight_max=configs["model"]["weight_max"],
         weight_step=configs["model"]["weight_step"],
     )

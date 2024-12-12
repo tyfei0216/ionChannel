@@ -59,6 +59,8 @@ def run():
 
     trainer = L.Trainer(accelerator="gpu", devices=args.devices)
     res = trainer.predict(model, dl)
+    if isinstance(res[0], tuple):
+        res = [r[0] for r in res]
     pre = torch.stack(res).numpy()
 
     plt.hist(pre)
@@ -70,7 +72,7 @@ def run():
         os.path.join(
             args.output, "%s_%s.txt" % (dataset_basename, checkpoint_basename)
         ),
-        res,
+        pre,
     )
 
 

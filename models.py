@@ -179,6 +179,7 @@ class IonBaseclf(L.LightningModule):
         thres=0.95,
         weight_decay=0.005,
         additional_label_weights=[],
+        pos_weights=[],
     ):
         super().__init__()
         self.addadversial = addadversial
@@ -187,9 +188,23 @@ class IonBaseclf(L.LightningModule):
                 additional_label_weights, requires_grad=False
             )
         # self.additional_label_weights = additional_label_weights
+
         additional_label_weights = torch.nn.Parameter(additional_label_weights)
         self.register_parameter("additional_label_weights", additional_label_weights)
         self.additional_label_weights.requires_grad = False
+
+        if pos_weights is None:
+            pos_weights = torch.ones_like(additional_label_weights)
+
+        if not isinstance(pos_weights, torch.Tensor):
+            pos_weights = torch.tensor(pos_weights, requires_grad=False)
+        # assert len(pos_weights) == len(additional_label_weights)
+        # print(pos_weights)
+        pos_weights = torch.nn.Parameter(pos_weights)
+        self.register_parameter("pos_weights", pos_weights)
+        self.pos_weights.requires_grad = False
+        # print(pos_weights.shape, additional_label_weights.shape)
+        assert len(pos_weights) == len(additional_label_weights)
 
         self.lamb = lamb
         self.step_lambda = step_lambda
@@ -240,15 +255,19 @@ class IonBaseclf(L.LightningModule):
             loss1 = F.binary_cross_entropy(y_pre1, y1.float())
             # print(y_pre1.shape, self.additional_label_weights[None, :].shape)
             q = self.additional_label_weights[None, :].repeat(y_pre1.shape[0], 1)
+            qq = self.pos_weights[None, :].repeat(y_pre1.shape[0], 1)
             q[y2 < 0] = 0.0
             q.require_grad = False
             y2[y2 < 0] = 0
             y2[y2 > 1] = 1
+            qq[y2 < 0.5] = 1.0
+            qq.require_grad = False
+            # print(qq)
             # print(y_pre2, y2, q)
             loss1_a = F.binary_cross_entropy(
                 y_pre2,
                 y2.float(),
-                weight=q,  # self.additional_label_weights,
+                weight=q * qq,  # self.additional_label_weights,
             )
             # print("finish loss")
             y_pre = y_pre1  # .squeeze(-1)
@@ -449,7 +468,15 @@ class IonBaseclf(L.LightningModule):
             y = None
         # print(X1, len)
         pre, _ = self(X1)
-        pre = pre.squeeze()
+        if len(self.additional_label_weights) == 0:
+            pre0 = pre.squeeze()
+            pre = pre0
+        else:
+            pre0 = pre[0].squeeze()
+            pre1 = pre[1].squeeze()
+            pre = (pre0, pre1)
+            # pre = torch.cat([pre0, pre1], 1)
+        # pre = pre.squeeze()
         if y is None:
             return pre
         else:
@@ -697,6 +724,7 @@ class IonclfESMC(IonBaseclf):
         thres=0.95,
         weight_decay=0.005,
         addition_label_weights=[],
+        pos_weights=[],
         weight_step=1.5,
         weight_max=6,
         clf="linear",
@@ -717,6 +745,7 @@ class IonclfESMC(IonBaseclf):
             thres=thres,
             weight_decay=weight_decay,
             additional_label_weights=addition_label_weights,
+            pos_weights=pos_weights,
         )
 
         self.embed_dim = embed_dim
@@ -763,7 +792,7 @@ class IonclfESMC(IonBaseclf):
         )
 
         x = representations.embeddings  # [:, 0]
-        x = x.to(torch.float32)
+        # x = x.to(torch.float32)
         x1 = self.reverse(x)
         x1 = x
         pre = self.clf(x)
