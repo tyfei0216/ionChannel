@@ -48,7 +48,7 @@ def run():
 
     print("start training")
 
-    if args.checkpoint is not None:
+    if args.checkpoint is not None and "active_learning" not in configs:
         model.strict_loading = False
         trainer.fit(model, ds, ckpt_path=args.checkpoint)
     else:

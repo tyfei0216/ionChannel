@@ -159,7 +159,7 @@ def loadDatasetesm3(configs):
     return ds
 
 
-def loadBalancedDatasetesm3(configs):
+def loadBalancedDatasetesm3args(configs):
     import VirusDataset
 
     pos_datasets = []
@@ -204,25 +204,64 @@ def loadBalancedDatasetesm3(configs):
     if "required_labels" not in configs["dataset"]:
         configs["dataset"]["required_labels"] = []
 
-    ds = VirusDataset.ESM3BalancedDataModule(
+    args = [
         pos_datasets,
         neg_datasets,
         test_datasets,
-        configs["train"]["batch_size"],
-        pos_neg_train=configs["dataset"]["dataset_train_sample"],
-        pos_neg_val=configs["dataset"]["dataset_val_sample"],
-        train_test_ratio=configs["dataset"]["train_test_ratio"],
-        aug=aug,
-        tracks=configs["dataset"]["tracks"],
-        required_labels=configs["dataset"]["required_labels"],
+    ]
+
+    argv = {
+        "batch_size": configs["train"]["batch_size"],
+        "pos_neg_train": configs["dataset"]["dataset_train_sample"],
+        "pos_neg_val": configs["dataset"]["dataset_val_sample"],
+        "train_test_ratio": configs["dataset"]["train_test_ratio"],
+        "aug": aug,
+        "tracks": configs["dataset"]["tracks"],
+        "required_labels": configs["dataset"]["required_labels"],
+    }
+
+    return args, argv
+
+
+def loadBalancedDatasetesm3(configs):
+    import VirusDataset
+
+    args, argv = loadBalancedDatasetesm3args(configs)
+    ds = VirusDataset.ESM3BalancedDataModule(*args, **argv)
+    return ds
+
+
+def loadBalancedDatasetesm3activelearning(configs):
+    import VirusDataset
+
+    active_learning_list = []
+    for i in configs["active_learning"]["datasets"]:
+        data = loadPickle(i)
+        active_learning_list.append(data)
+
+    args, argv = loadBalancedDatasetesm3args(configs)
+    ds = VirusDataset.ESM3BalancedDataModuleActiveLearning(
+        active_learning_list, *args, **argv
     )
     return ds
+
+
+def fixModelForActiveLearning(model):
+    model = models.fixParameters(model, unfix=["clf"], fix=["additional_clf"])
+    return model
+
+
+def loadActiveLearningWeights(model, path):
+    t = torch.load(path, map_location="cpu")
+    model.load_state_dict(t["state_dict"], strict=False)
+    return model
 
 
 LOAD_DATASET = {
     "esm2": loadDatasetesm2,
     "esm3": loadDatasetesm3,
     "balancedesm3": loadBalancedDatasetesm3,
+    "balancedesm3activelearning": loadBalancedDatasetesm3activelearning,
 }
 
 
@@ -285,6 +324,10 @@ def buildesm3Model(configs, model):
 
     if "lr_backbone" not in configs["model"]:
         configs["model"]["lr_backbone"] = None
+
+    if "more params" not in configs["model"]:
+        configs["model"]["more params"] = {}
+
     clsmodel = models.IonclfESM3(
         model,
         step_lambda=configs["model"]["lambda_adapt"],
@@ -336,6 +379,9 @@ def buildesm3cModel(configs, model):
     if "weight_step" not in configs["model"]:
         configs["model"]["weight_step"] = 1
 
+    if "more params" not in configs["model"]:
+        configs["model"]["more params"] = {}
+
     clsmodel = models.IonclfESMC(
         model,
         step_lambda=configs["model"]["lambda_adapt"],
@@ -354,9 +400,9 @@ def buildesm3cModel(configs, model):
         dis_params=configs["model"]["dis_params"],
         weight_decay=configs["model"]["weight_decay"],
         addition_label_weights=configs["model"]["additional_label_weights"],
-        pos_weights=configs["model"]["pos_weights"],
         weight_max=configs["model"]["weight_max"],
         weight_step=configs["model"]["weight_step"],
+        **configs["model"]["more params"]
     )
     return clsmodel
 
@@ -378,6 +424,10 @@ MODEL_CLS = {
 def buildModel(
     configs, basemodel=None, checkpoint=None
 ) -> pytorch_lightning.LightningModule:
+
+    if "active_learning" in configs:
+        checkpoint = configs["active_learning"]["checkpoint"]
+
     model = "esm2"
     if "type" in configs["model"]:
         model = configs["model"]["type"]
@@ -398,6 +448,19 @@ def buildModel(
             model.load_freeze = [
                 configs["pretrain_model"]["unfreeze"]["layers"][i] for i in idx
             ]
+
+    if (
+        "active_learning" in configs
+        and "checkpoint_additional" in configs["active_learning"]
+        and len(configs["active_learning"]["checkpoint_additional"]) > 0
+    ):
+        model = loadActiveLearningWeights(
+            model, configs["active_learning"]["checkpoint_additional"]
+        )
+
+    if "active_learning" in configs:
+        print("fix model for active learning")
+        model = fixModelForActiveLearning(model)
 
     return model
 

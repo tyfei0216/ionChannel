@@ -468,6 +468,26 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         return x1, torch.tensor(labels), x2
 
 
+class ListActiveLearningDataset(Dataset):
+    def __init__(self, active_learning_lists, dataset):
+        super().__init__()
+        self.dataset = dataset
+        self.active_learning_lists = active_learning_lists
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        q = idx % len(self.active_learning_lists)
+        return *self.dataset[idx], self.active_learning_lists[q]
+
+    def step(self):
+        self.dataset.step()
+
+    def newEpoch(self):
+        self.dataset.newEpoch()
+
+
 class ESM3MultiTrackDataset(ESM3BaseDataset):
     def __init__(
         self,
@@ -518,13 +538,17 @@ class ESM3MultiTrackDatasetTEST(ESM3BaseDataset):
         data1,
         augment: DataAugmentation = None,
         tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
+        trunc=None,
     ) -> None:
         super().__init__(tracks=tracks)
         self.data1 = data1
         self.aug = augment
+        self.trunc = trunc
         # self.tracks = tracks
 
     def __len__(self):
+        if self.trunc is not None:
+            return np.min(self.trunc, len(self.data1))
         return len(self.data1)
 
     def step(self):
@@ -657,6 +681,32 @@ class ESM3BalancedDataModule(L.LightningDataModule):
         )
 
 
+class ESM3BalancedDataModuleActiveLearning(ESM3BalancedDataModule):
+    def __init__(self, active_learning_datasets, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.active_learning_datasets = []
+        cnt = 0
+        for i in active_learning_datasets:
+            activate_learning_dataset = []
+            for j in i:
+                t = {}
+                for k in ["seq_t", "structure_t", "sasa_t", "second_t"]:
+                    if k in j:
+                        t[k] = j[k]
+                t["id"] = cnt
+                cnt += 1
+                activate_learning_dataset.append(t)
+            self.active_learning_datasets.append(activate_learning_dataset)
+
+        self.train_set = ListActiveLearningDataset(
+            self.active_learning_datasets, self.train_set
+        )
+        self.val_set = ListActiveLearningDataset(
+            self.active_learning_datasets, self.val_set
+        )
+
+
 class ESM3datamodule(L.LightningDataModule):
     def __init__(
         self,
@@ -770,4 +820,4 @@ class SeqDataset(Dataset):
         return self.seq.shape[0]
 
     def __getitem__(self, idx):
-        r
+        return self.seq[idx], self.label[idx]

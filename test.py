@@ -25,6 +25,7 @@ def parseArgs():
         nargs="+",
         default=["seq_t", "structure_t", "sasa_t", "second_t"],
     )
+    parser.add_argument("-n", "--num", type=int, default=None)
     parser.add_argument("-i", "--input", type=str, required=True)
     args = parser.parse_args()
     return args
@@ -42,19 +43,30 @@ def run():
         configs = json.load(f)
     print("load model")
     pretrain_model = trainUtils.loadPretrainModel(configs)
-    model = trainUtils.buildModel(
-        configs,
-        pretrain_model,
-        os.path.join(args.path, args.checkpoint),
-    )
+    if "active_learning" in configs:
+        model = trainUtils.buildModel(
+            configs, pretrain_model, configs["active_learning"]["checkpoint"]
+        )
+        model = trainUtils.fixModelForActiveLearning(model)
+        model = trainUtils.loadActiveLearningWeights(
+            model, os.path.join(args.path, args.checkpoint)
+        )
+    else:
+        model = trainUtils.buildModel(
+            configs,
+            pretrain_model,
+            os.path.join(args.path, args.checkpoint),
+        )
     checkpoint_basename = os.path.basename(args.checkpoint)
-    checkpoint_basename = checkpoint_basename[: checkpoint_basename.find(".")]
+    checkpoint_basename = checkpoint_basename[: checkpoint_basename.rfind(".")]
     dataset_basename = os.path.basename(args.input)
-    dataset_basename = dataset_basename[: dataset_basename.find(".")]
+    dataset_basename = dataset_basename[: dataset_basename.rfind(".")]
 
     print("load dataset")
     testdata = trainUtils.loadPickle(args.input)
-    test_set = VirusDataset.ESM3MultiTrackDatasetTEST(testdata, tracks=args.tracks)
+    test_set = VirusDataset.ESM3MultiTrackDatasetTEST(
+        testdata, tracks=args.tracks, trunc=args.num
+    )
     dl = DataLoader(test_set, batch_size=1, shuffle=False)
 
     trainer = L.Trainer(accelerator="gpu", devices=args.devices)

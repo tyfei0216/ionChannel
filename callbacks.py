@@ -154,13 +154,21 @@ def getCallbacks(configs, args) -> List[L.Callback]:
     if "save" in configs["train"]:
         k = configs["train"]["save"]
 
+    if "monitor" not in configs["train"]:
+        configs["train"]["monitor"] = "validate_acc"
+    print("monitoring ", configs["train"]["monitor"])
+
+    if "filename" in configs["train"]:
+        filename = configs["train"]["filename"]
+    else:
+        filename = "{epoch}-{" + configs["train"]["monitor"] + ":.4f}"
     checkpoint_callback = ModelCheckpoint(
-        monitor="validate_acc",  # Replace with your validation metric
+        monitor=configs["train"]["monitor"],  # Replace with your validation metric
         mode="max",  # 'min' if the metric should be minimized (e.g., loss), 'max' for maximization (e.g., accuracy)
         save_top_k=k,  # Save top k checkpoints based on the monitored metric
         save_last=True,  # Save the last checkpoint at the end of training
         dirpath=args.path,  # Directory where the checkpoints will be saved
-        filename="{epoch}-{validate_acc:.2f}",  # Checkpoint file naming pattern
+        filename=filename,  # Checkpoint file naming pattern
     )
     ret.append(checkpoint_callback)
 
