@@ -27,6 +27,7 @@ def parseArgs():
     )
     parser.add_argument("-n", "--num", type=int, default=None)
     parser.add_argument("-i", "--input", type=str, required=True)
+    parser.add_argument("-b", "--bayes", type=int, default=-1)
     args = parser.parse_args()
     return args
 
@@ -43,20 +44,25 @@ def run():
         configs = json.load(f)
     print("load model")
     pretrain_model = trainUtils.loadPretrainModel(configs)
-    if "active_learning" in configs:
-        model = trainUtils.buildModel(
-            configs, pretrain_model, configs["active_learning"]["checkpoint"]
-        )
-        model = trainUtils.fixModelForActiveLearning(model)
-        model = trainUtils.loadActiveLearningWeights(
-            model, os.path.join(args.path, args.checkpoint)
-        )
-    else:
-        model = trainUtils.buildModel(
-            configs,
-            pretrain_model,
-            os.path.join(args.path, args.checkpoint),
-        )
+
+    # if "active_learning" in configs:
+    #     model = trainUtils.buildModel(
+    #         configs, pretrain_model, configs["active_learning"]["checkpoint"]
+    #     )
+    #     model = trainUtils.fixModelForActiveLearning(model)
+    #     model = trainUtils.loadActiveLearningWeights(
+    #         model, os.path.join(args.path, args.checkpoint)
+    #     )
+    # else:
+    model = trainUtils.buildModel(
+        configs,
+        pretrain_model,
+        os.path.join(args.path, args.checkpoint),
+    )
+
+    if args.bayes != -1:
+        model.bayes_predict = args.bayes
+
     checkpoint_basename = os.path.basename(args.checkpoint)
     checkpoint_basename = checkpoint_basename[: checkpoint_basename.rfind(".")]
     dataset_basename = os.path.basename(args.input)

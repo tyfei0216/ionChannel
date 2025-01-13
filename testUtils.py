@@ -60,19 +60,16 @@ def gsea(pos, total, permutation=100000, t=None):
         return cnt / len(t)
 
 
-def yeast(path, ingore_structure=False):
+def yeast(path, ingore_structure=False, col="yeast_1"):
     a = np.loadtxt(path)
-    df = pd.read_csv("temp/res.csv", index_col=0)
+    df = pd.read_csv("temp/expres.csv", index_col=0)
     df["new"] = a
-    df = df[["已合成的序列", "预测的序列", "new"]]
     df = df.sort_values("new", ascending=False)
     df["rank"] = range(len(df))
-    dfyeast = pd.read_excel("temp/筛选结果.xlsx", sheet_name="Yeast screening_res")
     if ingore_structure:
-        dfyeast = dfyeast[dfyeast["structure_not"] == 0]
-    df["is_yeast"] = df["已合成的序列"].apply(
-        lambda x: x in dfyeast["已合成的序列"].values
-    )
+        df = df[df[col] == 1]
+    else:
+        df = df[df[col] >= 1]
     return df
 
 
@@ -155,23 +152,14 @@ def umapdf(embed, labels, min_dist=0.3, n_neighbors=15):
     return df
 
 
-def ERcorrelation(path):
+def ERcorrelation(path, col="experiment_1"):
     from scipy import stats
 
     a = np.loadtxt(path)
-    df = pd.read_csv("temp/res.csv", index_col=0)
+    df = pd.read_csv("temp/expres.csv", index_col=0)
     df["new"] = a
-    df = df[["已合成的序列", "预测的序列", "new"]]
-    df = df.set_index("已合成的序列")
-    # df = df.sort_values("new", ascending=False)
-    # df["rank"] = range(len(df))
-    dfexp = pd.read_excel("./temp/1210_对应信息.xlsx", sheet_name="Sheet1")
-    dfexp["new"] = dfexp["蛋白质序列.1"].map(df["new"])
-    dfexp2 = pd.read_excel("./temp/1210_对应信息.xlsx", sheet_name="Sheet2")
-    dfexp2["rank"] = range(len(dfexp2))
-    dfexp2["rank"] = -dfexp2["rank"]
-    dfexp["rank"] = dfexp["质粒的名称"].map(dfexp2.set_index("Name")["rank"])
 
-    print(stats.spearmanr(dfexp["new"], dfexp["rank"]))
+    df = df[df[col] > 0]
+    print(stats.spearmanr(df["new"], -df[col]))
 
-    return dfexp
+    return df

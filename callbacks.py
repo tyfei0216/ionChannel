@@ -172,11 +172,11 @@ def getCallbacks(configs, args) -> List[L.Callback]:
     )
     ret.append(checkpoint_callback)
 
-    if "strategy" in configs["model"]:
+    if "strategy" in configs["train"]:
         print("build lambda update callback")
         lu = LambdaUpdate(
-            warmup=configs["model"]["strategy"]["warmup"],
-            check=configs["model"]["strategy"]["check"],
+            warmup=configs["train"]["strategy"]["warmup"],
+            check=configs["train"]["strategy"]["check"],
         )
         ret.append(lu)
 

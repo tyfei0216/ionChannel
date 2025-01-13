@@ -1,3 +1,4 @@
+# deprecated and merged into train.py
 import argparse
 import json
 import os
@@ -14,7 +15,6 @@ def parseArgs():
     parser.add_argument("-d", "--devices", type=int, nargs="+", default=[0])
     parser.add_argument("-s", "--strategy", type=str, default="auto")
     parser.add_argument("-n", "--name", type=str, default="ion_test")
-    parser.add_argument("-c", "--checkpoint", type=str, default=None)
     args = parser.parse_args()
     return args
 
@@ -38,7 +38,11 @@ def run():
     pretrain_model = trainUtils.loadPretrainModel(configs)
     print("build finetune model")
 
-    model = trainUtils.buildModel(configs, pretrain_model, args.checkpoint)
+    model = trainUtils.buildModel(
+        configs, pretrain_model, configs["active_learning"]["checkpoint"]
+    )
+
+    model = trainUtils.fixModelForActiveLearning(model)
 
     print("load dataset")
     ds = trainUtils.loadDataset(configs)
@@ -48,11 +52,11 @@ def run():
 
     print("start training")
 
-    if args.checkpoint is not None:
-        model.strict_loading = False
-        trainer.fit(model, ds, ckpt_path=args.checkpoint)
-    else:
-        trainer.fit(model, ds)
+    # if args.checkpoint is not None:
+    #     model.strict_loading = False
+    #     trainer.fit(model, ds, ckpt_path=args.checkpoint)
+    # else:
+    trainer.fit(model, ds)
     # torch.save(model.state_dict(), path + "parms.pt")
 
 

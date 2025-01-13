@@ -68,7 +68,12 @@ def loadesmc(configs):
     return model
 
 
+def loadNone(configs):
+    return None
+
+
 LOAD_PRETRAIN = {
+    "None": loadNone,
     "esm2": loadesm2,
     "esm3": loadesm3,
     "esmc_600m": loadesmc,
@@ -231,17 +236,36 @@ def loadBalancedDatasetesm3(configs):
     return ds
 
 
-def loadBalancedDatasetesm3activelearning(configs):
+def loadBalancedDatasetesm3list(configs):
     import VirusDataset
 
     active_learning_list = []
-    for i in configs["active_learning"]["datasets"]:
+    for i in configs["dataset"]["list"]:
         data = loadPickle(i)
         active_learning_list.append(data)
 
+    if "list_size" not in configs["dataset"]:
+        configs["dataset"]["list_size"] = 50
+
+    active_learning_datasets = []
+    cnt = 0
+    for i in active_learning_list:
+        activate_learning_dataset_sub = []
+        for j in i:
+            t = {}
+            for k in ["seq_t", "structure_t", "sasa_t", "second_t"]:
+                if k in j:
+                    t[k] = j[k]
+            t["id"] = "list_" + str(cnt)
+            cnt += 1
+            activate_learning_dataset_sub.append(t)
+        active_learning_datasets.append(activate_learning_dataset_sub)
     args, argv = loadBalancedDatasetesm3args(configs)
-    ds = VirusDataset.ESM3BalancedDataModuleActiveLearning(
-        active_learning_list, *args, **argv
+    ds = VirusDataset.ESM3BalancedDataModule(
+        lists=active_learning_datasets,
+        list_size=configs["dataset"]["list_size"],
+        *args,
+        **argv
     )
     return ds
 
@@ -261,7 +285,7 @@ LOAD_DATASET = {
     "esm2": loadDatasetesm2,
     "esm3": loadDatasetesm3,
     "balancedesm3": loadBalancedDatasetesm3,
-    "balancedesm3activelearning": loadBalancedDatasetesm3activelearning,
+    "balancedesm3list": loadBalancedDatasetesm3list,
 }
 
 
@@ -277,26 +301,39 @@ def loadDataset(configs) -> pytorch_lightning.LightningDataModule:
 
 
 def buildSimpleModel(configs, model=None):
+    if "params" in configs["model"]:
+        clsmodel = models.IonclfBaseline(**configs["model"]["params"])
+        return clsmodel
     clsmodel = models.IonclfBaseline(
         step_lambda=configs["model"]["lambda_adapt"],
         lamb=configs["model"]["lambda_ini"],
         max_lambda=configs["model"]["max_lambda"],
         step=configs["model"]["lambda_step"],
-        p=configs["model"]["dropout"],
         thres=configs["model"]["lambda_thres"],
         lr=configs["model"]["lr"],
         clf=configs["model"]["clf"],
+        clf_params=configs["model"]["clf_params"],
+        addition_clf=configs["model"]["addition_clf"],
+        addition_clf_params=configs["model"]["addition_clf_params"],
         dis=configs["model"]["dis"],
+        dis_params=configs["model"]["dis_params"],
         weight_decay=configs["model"]["weight_decay"],
+        addition_label_weights=configs["model"]["additional_label_weights"],
+        weight_max=configs["model"]["weight_max"],
+        weight_step=configs["model"]["weight_step"],
+        dis_loss="bce",
     )
     return clsmodel
 
 
 def buildesm2Model(configs, model):
+    if "params" in configs["model"]:
+        clsmodel = models.IonclfESM2(model, **configs["model"]["params"])
+        return clsmodel
     clsmodel = models.IonclfESM2(
         model,
         step_lambda=configs["model"]["lambda_adapt"],
-        lamb=configs["model"]["lambda_ini"],
+        lambda_ini=configs["model"]["lambda_ini"],
         max_lambda=configs["model"]["max_lambda"],
         step=configs["model"]["lambda_step"],
         p=configs["model"]["dropout"],
@@ -308,6 +345,11 @@ def buildesm2Model(configs, model):
 
 
 def buildesm3Model(configs, model):
+
+    if "params" in configs["model"]:
+        clsmodel = models.IonclfESM3(model, **configs["model"]["params"])
+        return clsmodel
+
     if "clf_params" not in configs["model"]:
         configs["model"]["clf_params"] = {}
     if "dis_params" not in configs["model"]:
@@ -349,61 +391,67 @@ def buildesm3Model(configs, model):
 
 
 def buildesm3cModel(configs, model):
-    if "clf_params" not in configs["model"]:
-        configs["model"]["clf_params"] = {}
-    if "dis_params" not in configs["model"]:
-        configs["model"]["dis_params"] = {}
+    # if "clf_params" not in configs["model"]:
+    #     configs["model"]["clf_params"] = {}
+    # if "dis_params" not in configs["model"]:
+    #     configs["model"]["dis_params"] = {}
 
-    if "addition_clf" not in configs["model"]:
-        configs["model"]["addition_clf"] = None
-        configs["model"]["addition_clf_params"] = None
-    elif "addition_clf_params" not in configs["model"]:
-        configs["model"]["addition_clf_params"] = {}
+    # if "addition_clf" not in configs["model"]:
+    #     configs["model"]["addition_clf"] = None
+    #     configs["model"]["addition_clf_params"] = None
+    # elif "addition_clf_params" not in configs["model"]:
+    #     configs["model"]["addition_clf_params"] = {}
 
-    if "additional_label_weights" not in configs["model"]:
-        configs["model"]["additional_label_weights"] = []
+    # if "pos_weights" not in configs["model"]:
+    #     configs["model"]["pos_weights"] = None
 
-    if "pos_weights" not in configs["model"]:
-        configs["model"]["pos_weights"] = None
+    # if "lr_backbone" not in configs["model"]:
+    #     configs["model"]["lr_backbone"] = None
 
-    assert len(configs["model"]["additional_label_weights"]) == len(
-        configs["dataset"]["required_labels"]
-    )
+    # if "weight_max" not in configs["model"]:
+    #     configs["model"]["weight_max"]
 
-    if "lr_backbone" not in configs["model"]:
-        configs["model"]["lr_backbone"] = None
+    # if "weight_step" not in configs["model"]:
+    #     configs["model"]["weight_step"] = 1
 
-    if "weight_max" not in configs["model"]:
-        configs["model"]["weight_max"]
+    # if "more params" not in configs["model"]:
+    #     configs["model"]["more params"] = {}
+    # print("esm3c model")
+    if "params" in configs["model"]:
+        # print("using config params")
+        clsmodel = models.IonclfESMC(model, **configs["model"]["params"])
+    else:
+        if "additional_label_weights" not in configs["model"]:
+            configs["model"]["additional_label_weights"] = []
+        if "stage" not in configs["model"]:
+            configs["model"]["stage"] = "base_learning"
+        # print("config s stage %s" % configs["model"]["stage"])
+        assert len(configs["model"]["additional_label_weights"]) == len(
+            configs["dataset"]["required_labels"]
+        )
 
-    if "weight_step" not in configs["model"]:
-        configs["model"]["weight_step"] = 1
-
-    if "more params" not in configs["model"]:
-        configs["model"]["more params"] = {}
-
-    clsmodel = models.IonclfESMC(
-        model,
-        step_lambda=configs["model"]["lambda_adapt"],
-        lamb=configs["model"]["lambda_ini"],
-        embed_dim=configs["model"]["embed_dim"],
-        max_lambda=configs["model"]["max_lambda"],
-        step=configs["model"]["lambda_step"],
-        thres=configs["model"]["lambda_thres"],
-        lr=configs["model"]["lr"],
-        lr_backbone=configs["model"]["lr_backbone"],
-        clf=configs["model"]["clf"],
-        clf_params=configs["model"]["clf_params"],
-        addition_clf=configs["model"]["addition_clf"],
-        addition_clf_params=configs["model"]["addition_clf_params"],
-        dis=configs["model"]["dis"],
-        dis_params=configs["model"]["dis_params"],
-        weight_decay=configs["model"]["weight_decay"],
-        addition_label_weights=configs["model"]["additional_label_weights"],
-        weight_max=configs["model"]["weight_max"],
-        weight_step=configs["model"]["weight_step"],
-        **configs["model"]["more params"]
-    )
+        clsmodel = models.IonclfESMC(
+            model,
+            stage=configs["model"]["stage"],
+            step_lambda=configs["model"]["lambda_adapt"],
+            lambda_ini=configs["model"]["lambda_ini"],
+            max_lambda=configs["model"]["max_lambda"],
+            step=configs["model"]["lambda_step"],
+            lambda_thres=configs["model"]["lambda_thres"],
+            lr=configs["model"]["lr"],
+            lr_backbone=configs["model"]["lr_backbone"],
+            clf=configs["model"]["clf"],
+            clf_params=configs["model"]["clf_params"],
+            addition_clf=configs["model"]["addition_clf"],
+            addition_clf_params=configs["model"]["addition_clf_params"],
+            dis=configs["model"]["dis"],
+            dis_params=configs["model"]["dis_params"],
+            weight_decay=configs["model"]["weight_decay"],
+            additional_label_weights=configs["model"]["additional_label_weights"],
+            weight_max=configs["model"]["weight_max"],
+            weight_step=configs["model"]["weight_step"],
+            dis_loss=configs["model"]["dis_loss"],
+        )
     return clsmodel
 
 
@@ -425,8 +473,8 @@ def buildModel(
     configs, basemodel=None, checkpoint=None
 ) -> pytorch_lightning.LightningModule:
 
-    if "active_learning" in configs:
-        checkpoint = configs["active_learning"]["checkpoint"]
+    # if "active_learning" in configs:
+    #     checkpoint = configs["active_learning"]["checkpoint"]
 
     model = "esm2"
     if "type" in configs["model"]:
@@ -437,8 +485,8 @@ def buildModel(
     else:
         raise NotImplementedError
 
-    if checkpoint is not None:
-        t = torch.load(checkpoint, map_location="cpu")
+    if "active_learning" in configs:
+        t = torch.load(configs["active_learning"]["checkpoint"], map_location="cpu")
         model.load_state_dict(t["state_dict"], strict=False)
         gs = t["global_step"]
         if "unfreeze" in configs["pretrain_model"]:
@@ -457,6 +505,18 @@ def buildModel(
         model = loadActiveLearningWeights(
             model, configs["active_learning"]["checkpoint_additional"]
         )
+
+    if checkpoint is not None:
+        t = torch.load(checkpoint, map_location="cpu")
+        model.load_state_dict(t["state_dict"], strict=False)
+        gs = t["global_step"]
+        if "unfreeze" in configs["pretrain_model"]:
+            t = configs["pretrain_model"]["unfreeze"]["steps"]
+            idx = np.argsort(t)
+            idx = filter(lambda x: t[x] < gs, idx)
+            model.load_freeze = [
+                configs["pretrain_model"]["unfreeze"]["layers"][i] for i in idx
+            ]
 
     if "active_learning" in configs:
         print("fix model for active learning")

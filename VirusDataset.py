@@ -468,24 +468,40 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         return x1, torch.tensor(labels), x2
 
 
+class ListESM3MultiTrackBalancedDataset(ESM3MultiTrackBalancedDataset):
+    def __init__(self, active_learning_lists, list_size=50, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.active_learning_lists = active_learning_lists
+        self.list_size = list_size
+
+    def __getitem__(self, idx):
+        res = super().__getitem__(idx)
+        q = idx % len(self.active_learning_lists)
+        t = min(self.list_size, len(self.active_learning_lists[q]))
+        t = random.sample(range(len(self.active_learning_lists[q])), t)
+        t = sorted(t)
+        ret = [self.active_learning_lists[q][i] for i in t]
+        return *res, ret
+
+
 class ListActiveLearningDataset(Dataset):
-    def __init__(self, active_learning_lists, dataset):
+    def __init__(self, active_learning_lists, dataset, list_size=50):
         super().__init__()
         self.dataset = dataset
         self.active_learning_lists = active_learning_lists
+        self.list_size = list_size
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         q = idx % len(self.active_learning_lists)
-        return *self.dataset[idx], self.active_learning_lists[q]
-
-    def step(self):
-        self.dataset.step()
-
-    def newEpoch(self):
-        self.dataset.newEpoch()
+        # print(len(self.active_learning_lists[q]))
+        t = min(self.list_size, len(self.active_learning_lists[q]))
+        t = random.sample(range(len(self.active_learning_lists[q])), t)
+        t = sorted(t)
+        ret = [self.active_learning_lists[q][i] for i in t]
+        return *self.dataset[idx], ret
 
 
 class ESM3MultiTrackDataset(ESM3BaseDataset):
@@ -581,6 +597,8 @@ class ESM3BalancedDataModule(L.LightningDataModule):
         seed=1509,
         tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
         required_labels=[],
+        lists=None,
+        list_size=50,
     ):
         super().__init__()
         self.value = 0
@@ -624,26 +642,50 @@ class ESM3BalancedDataModule(L.LightningDataModule):
             self.val_indices2.append(i2)
 
         torch.manual_seed(self.seed)
-
-        self.train_set = ESM3MultiTrackBalancedDataset(
-            self.traindata1,
-            self.traindata2,
-            self.data3,
-            augment=aug,
-            pos_neg_sample=pos_neg_train,
-            tracks=tracks,
-            required_labels=required_labels,
-        )
-
-        self.val_set = ESM3MultiTrackBalancedDataset(
-            self.valdata1,
-            self.valdata2,
-            self.data3,
-            augment=aug,
-            pos_neg_sample=pos_neg_val,
-            tracks=tracks,
-            required_labels=required_labels,
-        )
+        if lists is None:
+            self.train_set = ESM3MultiTrackBalancedDataset(
+                self.traindata1,
+                self.traindata2,
+                self.data3,
+                augment=aug,
+                pos_neg_sample=pos_neg_train,
+                tracks=tracks,
+                required_labels=required_labels,
+            )
+        else:
+            self.train_set = ListESM3MultiTrackBalancedDataset(
+                lists,
+                list_size,
+                self.traindata1,
+                self.traindata2,
+                self.data3,
+                augment=aug,
+                pos_neg_sample=pos_neg_train,
+                tracks=tracks,
+                required_labels=required_labels,
+            )
+        if lists is None:
+            self.val_set = ESM3MultiTrackBalancedDataset(
+                self.valdata1,
+                self.valdata2,
+                self.data3,
+                augment=aug,
+                pos_neg_sample=pos_neg_val,
+                tracks=tracks,
+                required_labels=required_labels,
+            )
+        else:
+            self.val_set = ListESM3MultiTrackBalancedDataset(
+                lists,
+                list_size,
+                self.valdata1,
+                self.valdata2,
+                self.data3,
+                augment=aug,
+                pos_neg_sample=pos_neg_val,
+                tracks=tracks,
+                required_labels=required_labels,
+            )
 
         self.test_set = ESM3MultiTrackDatasetTEST(self.data3, tracks=tracks)
 
@@ -682,8 +724,9 @@ class ESM3BalancedDataModule(L.LightningDataModule):
 
 
 class ESM3BalancedDataModuleActiveLearning(ESM3BalancedDataModule):
-    def __init__(self, active_learning_datasets, *args, **kwargs):
+    def __init__(self, active_learning_datasets, list_size=50, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.list_size = list_size
 
         self.active_learning_datasets = []
         cnt = 0
@@ -700,10 +743,10 @@ class ESM3BalancedDataModuleActiveLearning(ESM3BalancedDataModule):
             self.active_learning_datasets.append(activate_learning_dataset)
 
         self.train_set = ListActiveLearningDataset(
-            self.active_learning_datasets, self.train_set
+            self.active_learning_datasets, self.train_set, self.list_size
         )
         self.val_set = ListActiveLearningDataset(
-            self.active_learning_datasets, self.val_set
+            self.active_learning_datasets, self.val_set, self.list_size
         )
 
 
