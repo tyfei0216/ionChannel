@@ -8,6 +8,7 @@ import pytorch_lightning as L
 import torch
 from torch.utils.data import DataLoader
 
+import testUtils
 import trainUtils
 import VirusDataset
 
@@ -77,21 +78,32 @@ def run():
 
     trainer = L.Trainer(accelerator="gpu", devices=args.devices)
     res = trainer.predict(model, dl)
-    if isinstance(res[0], tuple):
-        res = [r[0] for r in res]
-    pre = torch.stack(res).numpy()
+
+    # print(res)
+
+    df, pre = testUtils.resultDataframe(res, configs)
+    # if isinstance(res[0], tuple):
+    #     res = [r[0] for r in res]
+    # pre = torch.stack(res).numpy()
 
     plt.hist(pre)
     plt.savefig(
         os.path.join(args.output, "%s_%s.png" % (dataset_basename, checkpoint_basename))
     )
 
-    np.savetxt(
+    df.to_csv(
         os.path.join(
-            args.output, "%s_%s.txt" % (dataset_basename, checkpoint_basename)
+            args.output, "%s_%s.csv" % (dataset_basename, checkpoint_basename)
         ),
-        pre,
+        index=False,
     )
+
+    # np.savetxt(
+    #     os.path.join(
+    #         args.output, "%s_%s.txt" % (dataset_basename, checkpoint_basename)
+    #     ),
+    #     pre,
+    # )
 
 
 if __name__ == "__main__":

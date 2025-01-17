@@ -45,6 +45,7 @@ class DataAugmentation:
         maskp: list,
         crop: list,
         croprange: list,
+        maskpp: list = None,
         tracks: list = None,
     ) -> None:
         assert len(step_points) == len(maskp)
@@ -54,20 +55,28 @@ class DataAugmentation:
             self.tracks = {"seq_t": 1, "structure_t": 1, "sasa_t": 1, "second_t": 1}
         self.step_points = step_points
         self.maskp = maskp
+        if maskpp is None:
+            maskpp = [-1 for i in range(len(maskp))]
+        self.maskpp = maskpp
         self.crop = crop
         self.croprange = croprange
 
     def _getSettings(self, step):
         maskp = (-1.0, -1.0)
         crop = -1.0
+        maskpp = -1.0
         for i in range(len(self.step_points)):
             if step > self.step_points[i]:
+                maskpp = self.maskpp[i]
                 maskp = self.maskp[i]
                 crop = self.crop[i]
-        return maskp, crop
+        return maskp, crop, maskpp
 
     def getAugmentation(self, seqlen, step):
-        maskp, crop = self._getSettings(step)
+        maskp, crop, maskpp = self._getSettings(step)
+        r = np.random.uniform(0.001, 0.999)
+        if r < maskpp:
+            maskp = (-1.0, -1.0)
         rettrack = {}
         flag = 0
         for i in self.tracks:
@@ -172,7 +181,8 @@ class ESM3BaseDataset(Dataset):
 
     def _maskSequence(self, sample, pos):
         for i in sample:
-            sample[i][pos] = self.getToken(i, "mask")
+            if i in self.tracks:
+                sample[i][pos] = self.getToken(i, "mask")
 
         return sample
 
@@ -190,8 +200,8 @@ class ESM3BaseDataset(Dataset):
 
     def _cropSequence(self, sample, start, end):
         for i in sample:
-            t = torch.zeros((end - start + 2), dtype=torch.long)
-            t[1:-1] = torch.tensor(sample[i][start:end])
+            t = np.zeros((end - start + 2), dtype=int)
+            t[1:-1] = sample[i][start:end]
             t[0] = self.getToken(i, "start")
             t[-1] = self.getToken(i, "end")
             sample[i] = t
@@ -236,6 +246,11 @@ class ESM3BaseDataset(Dataset):
 
         # assert samplelen > 45
 
+        for i in self.tracks:
+            ret["ori_" + i] = ret[i].copy()
+
+        ret["mask"] = np.ones_like(ret[i], dtype=np.int32)
+
         if maskp[0] > 0 and samplelen > MIN_LENGTH:
 
             while True:
@@ -246,6 +261,7 @@ class ESM3BaseDataset(Dataset):
             pos = self._generateMaskingPos(num, samplelen)
             if len(pos) > 0:
                 ret = self._maskSequence(ret, pos)
+                ret["mask"][pos] = 0
 
         if maskp[1] > 0 and samplelen > MIN_LENGTH:
             while True:
@@ -255,6 +271,7 @@ class ESM3BaseDataset(Dataset):
             pos = self._generateMaskingPos(num, samplelen, "block")
             if len(pos) > 0:
                 ret = self._maskSequence(ret, pos)
+                ret["mask"][pos] = 0
         # if tracks is not None:
         #     for i in tracks:
         #         if not tracks[i]:
@@ -264,16 +281,21 @@ class ESM3BaseDataset(Dataset):
         # print(sample)
         return ret
 
-    def processSample(self, sample):
+    def processSample(self, sample, _crop=None):
         if self.aug is not None and self.ifaug:
             maskp, crop, tracks = self.aug.getAugmentation(
                 len(sample[self.tracks[0]]), self.step_cnt
             )
+            if _crop is not None:
+                crop = _crop
             x1 = self._augmentsample(sample, maskp, crop, tracks)
         else:
             x1 = {}
             for i in self.tracks:
                 x1[i] = sample[i]
+                x1["ori_" + i] = sample[i]
+            x1["mask"] = np.ones_like(sample[i], dtype=np.int32)
+
         return x1
 
     def prepareLabels(self, sample, label):
@@ -460,8 +482,10 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
 
         x1 = self.processSample(t1)
 
-        for i in self.tracks:
-            x2[i] = t2[i]
+        x2 = self.processSample(t2, -1)
+
+        # for i in self.tracks:
+        #     x2[i] = t2[i]
 
         labels = self.prepareLabels(t1, label)
 

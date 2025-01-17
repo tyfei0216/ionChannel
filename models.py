@@ -35,6 +35,39 @@ class GradientReversal(nn.Module):
         return GradientR.apply(x, self.alpha)
 
 
+class Linearlayer(nn.Module):
+    def __init__(self, in_dim, out_dim, dropout=0.2, layer_norm=False, activate="gelu"):
+        super().__init__()
+        self.linear = nn.Linear(in_dim, out_dim)
+        if layer_norm is not None:
+            self.ln = nn.LayerNorm(out_dim)
+        else:
+            self.ln = None
+        if dropout > 0 and dropout < 1:
+            self.dropout = nn.Dropout(p=dropout)
+        else:
+            self.dropout = None
+        if activate == "gelu":
+            self.activate = nn.GELU()
+        elif activate == "relu":
+            self.activate = nn.ReLU()
+        elif activate == "leakyrelu":
+            self.activate = nn.LeakyReLU()
+        else:
+            self.activate = nn.Identity()
+            # raise ValueError("activate %s not supported" % acivate)
+        # self.activate = activate
+
+    def forward(self, x):
+        x = self.linear(x)
+        if self.ln is not None:
+            x = self.ln(x)
+        x = self.activate(x)
+        if self.dropout is not None:
+            x = self.dropout(x)
+        return x
+
+
 class Linearcls(nn.Module):
     """simple linear classifier
 
@@ -43,7 +76,16 @@ class Linearcls(nn.Module):
     """
 
     def __init__(
-        self, input_dim=1536, take_embed="first", dropout=-1, p0=None, output_dim=1
+        self,
+        input_dim=1536,
+        take_embed="first",
+        dropout=-1,
+        p0=None,
+        output_dim=1,
+        hidden_dim=256,
+        hidden_layer=-1,
+        activate="gelu",
+        layer_norm=False,
     ):
         super().__init__()
 
@@ -52,22 +94,44 @@ class Linearcls(nn.Module):
         self.dropout = dropout
         self.take_embed = take_embed
         self.output_dim = output_dim
+        self.hidden_dim = hidden_dim
 
-        self.l1 = nn.Linear(self.embed_dim, self.embed_dim // 2)
-        self.l2 = nn.Linear(self.embed_dim // 2, self.embed_dim // 4)
-        self.l3 = nn.Linear(self.embed_dim // 4, output_dim)
-        self.ln1 = nn.LayerNorm(self.embed_dim // 2)
-        self.ln2 = nn.LayerNorm(self.embed_dim // 4)
+        if hidden_layer == -1:
+            self.l1 = nn.Linear(self.embed_dim, self.embed_dim // 2)
+            self.l2 = nn.Linear(self.embed_dim // 2, self.embed_dim // 4)
+            self.l3 = nn.Linear(self.embed_dim // 4, output_dim)
+            self.ln1 = nn.LayerNorm(self.embed_dim // 2)
+            self.ln2 = nn.LayerNorm(self.embed_dim // 4)
+
+            if dropout > 0 and dropout < 1:
+                self.dropout1 = nn.Dropout(p=self.dropout)
+                self.dropout2 = nn.Dropout(p=self.dropout)
+            else:
+                self.dropout1 = None
+                self.dropout2 = None
+            self.layers = None
+        else:
+
+            in_dims = [input_dim] + [hidden_dim] * (hidden_layer)
+            output_dims = [hidden_dim] * (hidden_layer + 1)
+            self.layers = nn.ModuleList(
+                [
+                    Linearlayer(
+                        in_dims[i],
+                        output_dims[i],
+                        dropout=dropout,
+                        layer_norm=layer_norm,
+                        activate=activate,
+                    )
+                    for i in range(len(in_dims))
+                ]
+            )
+            self.output = nn.Linear(hidden_dim, output_dim)
+
         if p0 is None:
             self.p0 = None
         else:
             self.p0 = nn.Dropout(p0)
-        if dropout > 0 and dropout < 1:
-            self.dropout1 = nn.Dropout(p=self.dropout)
-            self.dropout2 = nn.Dropout(p=self.dropout)
-        else:
-            self.dropout1 = None
-            self.dropout2 = None
 
     def forward(self, x: torch.Tensor):
 
@@ -82,18 +146,24 @@ class Linearcls(nn.Module):
         if self.p0 is not None:
             x = self.p0(x)
 
-        x = self.l1(x)
-        x = self.ln1(x)
-        if self.dropout1 is not None:
-            x = self.dropout1(x)
-        x = F.gelu(x)
-        x = self.l2(x)
-        x = self.ln2(x)
-        if self.dropout2 is not None:
-            x = self.dropout2(x)
-        x = F.gelu(x)
-        x = self.l3(x)
+        if self.layers is None:
+            x = self.l1(x)
+            x = self.ln1(x)
+            if self.dropout1 is not None:
+                x = self.dropout1(x)
+            x = F.gelu(x)
+            x = self.l2(x)
+            x = self.ln2(x)
+            if self.dropout2 is not None:
+                x = self.dropout2(x)
+            x = F.gelu(x)
+            x = self.l3(x)
+            return x
+
+        for layer in self.layers:
+            x = layer(x)
         # print("lin", x.shape)
+        x = self.output(x)
         return x
         if self.output_dim == 1:
             return x
@@ -184,14 +254,13 @@ class IonBaseclf(L.LightningModule):
         lambda_ini=0.1,
         lr=5e-4,
         lr_backbone=None,
-        step_lambda=True,
-        step=1.5,
+        step_lambda=1.5,
         max_lambda=6,
         lambda_thres=0.95,
         weight_decay=0.005,
         additional_label_weights=[],
         dis_loss="bce",
-        active_learning_lambda=1.0,
+        list_learning_lambda=1.0,
         max_val=30,
         eps=1e-8,
         cache_list=True,
@@ -210,6 +279,9 @@ class IonBaseclf(L.LightningModule):
         std_target=None,
         list_activate="None",
         bayes_predict=-1,
+        logits=-1,
+        mask_weight=0.0,
+        logit_dim=64,
     ):
         super().__init__()
         self.addadversial = addadversial
@@ -243,7 +315,6 @@ class IonBaseclf(L.LightningModule):
 
         self.lamb = lambda_ini
         self.step_lambda = step_lambda
-        self.step = step
         self.max_lambda = max_lambda
         self.thres = lambda_thres
         self.update_epoch = False
@@ -264,13 +335,11 @@ class IonBaseclf(L.LightningModule):
 
         self.listmle = ListMLE(max_val=max_val, eps=eps)
 
-        self.active_learning_lambda = active_learning_lambda
+        self.list_learning_lambda = list_learning_lambda
 
         self.cache_list = cache_list
 
         self.embedding_cache = {}
-
-        self.is_validate = False
 
         self.mean_target = mean_target
         self.std_target = std_target
@@ -304,6 +373,14 @@ class IonBaseclf(L.LightningModule):
         else:
             self.additional_clf = None
 
+        self.cross_entropy = nn.CrossEntropyLoss(reduction="none")
+
+        self.logits = logits
+
+        self.mask_weight = mask_weight
+
+        self.logit_dim = logit_dim
+
     def getScore(self, input_dict, idx=None):
         """only used for active learning stage
             return the score of the input data for List loss
@@ -326,11 +403,14 @@ class IonBaseclf(L.LightningModule):
         pre = self.clf(x)
         return pre
 
-    def getEmbedding(self, x):
+    def getEmbedding(self, x, return_logits=False):
         raise NotImplementedError
 
     def forward(self, input_dict):
-        x = self.getEmbedding(input_dict)
+        if self.logits >= 0.0:
+            x, h = self.getEmbedding(input_dict, return_logits=True)
+        else:
+            x = self.getEmbedding(input_dict)
 
         x1 = self.reverse(x)
         pre = self.clf(x)
@@ -343,13 +423,36 @@ class IonBaseclf(L.LightningModule):
         y = self.dis(x1)
         if self.dis_loss == "bce":
             y = F.sigmoid(y)
+        if self.logits >= 0.0:
+            return pre, y, h
         return pre, y
 
     def _common_training_step(self, batch):
         X1, y, X2 = batch
-        y_pre, dis_pre_x1 = self(X1)
-        _y, dis_pre_x2 = self(X2)
+        if self.logits < 0.0:
+            y_pre, dis_pre_x1 = self(X1)
+            _y, dis_pre_x2 = self(X2)
+            loss_logit = None
+        else:
+            y_pre, dis_pre_x1, logits1 = self(X1)
+            _y, dis_pre_x2, logits2 = self(X2)
+            # print(logits1.shape, X1["ori_seq_t"].shape, X1["mask"].shape)
+            loss_logit1 = self.cross_entropy(
+                logits1.view(-1, self.logit_dim), X1["ori_seq_t"].view(-1).long()
+            )
+            mask1 = 1 - X1["mask"].float()
+            mask1 += self.mask_weight
+            loss_logit1 = torch.sum(loss_logit1 * mask1) / (torch.sum(mask1) + 1e-8)
+            loss_logit2 = F.cross_entropy(
+                logits2.view(-1, self.logit_dim), X2["ori_seq_t"].view(-1).long()
+            )
+            mask2 = 1 - X2["mask"].float()
+            mask2 += self.mask_weight
+            loss_logit2 = torch.sum(loss_logit2 * mask2) / (torch.sum(mask2) + 1e-8)
+            loss_logit = (loss_logit1 + loss_logit2) / 2
+
         # print(y_pre, y)
+
         if len(y.size()) == 2:
             y = y.squeeze(0)
 
@@ -407,16 +510,20 @@ class IonBaseclf(L.LightningModule):
 
         if len(self.additional_label_weights) > 0:
             loss += loss1_a
-            return loss, (loss1, loss1_a), loss2, y_pre, y
-        else:
-            return loss, loss1, loss2, y_pre, y
+            loss1 = (loss1, loss1_a)
+
+        if loss_logit is not None:
+            loss += loss_logit * self.logits
+            loss2 = (loss2, loss_logit)
+
+        return loss, loss1, loss2, y_pre, y
 
     # def getScore(self, input_dict, idx):
     #     raise NotImplementedError
 
     def _list_training_step(self, batch):
 
-        loss = 0
+        loss_list = 0
 
         scores = []
         for i, x in enumerate(batch):
@@ -429,24 +536,24 @@ class IonBaseclf(L.LightningModule):
         scores = torch.stack(scores)
 
         if self.mean_target is not None:
-            loss += (torch.mean(F.sigmoid(scores)) - self.mean_target) ** 2
+            loss_list += (torch.mean(F.sigmoid(scores)) - self.mean_target) ** 2
 
         if self.std_target is not None:
-            loss += (torch.std(F.sigmoid(scores)) - self.std_target) ** 2
+            loss_list += (torch.std(F.sigmoid(scores)) - self.std_target) ** 2
 
         if self.stage == "active_learning":
             if self.list_activate == "None":
                 # print(scores.requires_grad)
-                loss += self.listmle(scores)
+                loss_list += self.listmle(scores)
             elif self.list_activate == "sigmoid":
-                loss += self.listmle(F.sigmoid(scores))
+                loss_list += self.listmle(F.sigmoid(scores))
             else:
                 raise ValueError("list activate %s not supported" % self.list_activate)
             # loss = self._active_training_step(batch)
             # return loss
             # loss += self.listmle(scores)
 
-        return loss
+        return loss_list
 
     def training_step(self, batch, batch_idx):
 
@@ -458,6 +565,9 @@ class IonBaseclf(L.LightningModule):
         # else:
         #     loss, loss1, loss2, y_pre, y = self._common_training_step(batch[:3])
 
+        if self.logits >= 0.0:
+            loss2, loss_logit = loss2
+
         train_output_dict = {
             "loss": loss.detach().cpu(),
             "loss2": loss2.detach().cpu(),
@@ -465,9 +575,12 @@ class IonBaseclf(L.LightningModule):
             "true_label": y.cpu(),
         }
 
+        if self.logits >= 0.0:
+            train_output_dict["loss_logit"] = loss_logit.detach().cpu()
+
         # acc = self.acc(y_pre.squeeze(-1), y)
         if len(self.additional_label_weights) == 0:
-            train_output_dict["loss1"] = (loss1.detach().cpu(),)
+            train_output_dict["loss1"] = loss1.detach().cpu()
         else:
             train_output_dict["loss1"] = loss1[0].detach().cpu()
             train_output_dict["loss1_a"] = loss1[1].detach().cpu()
@@ -480,7 +593,7 @@ class IonBaseclf(L.LightningModule):
                 loss_list = self._list_training_step(batch[3])
                 if self.stage == "active_learning":
                     train_output_dict["loss_list"] = loss_list.detach().cpu()
-                loss = loss * self.active_learning_lambda + loss_list
+                loss = loss * self.list_learning_lambda + loss_list
                 # loss = loss_list
                 # loss = loss_list
                 train_output_dict["loss"] = loss.detach().cpu()
@@ -494,56 +607,51 @@ class IonBaseclf(L.LightningModule):
 
     def on_before_optimizer_step(self, optimizer: Optimizer) -> None:
 
-        loss = torch.stack(
-            [x["loss"] for x in self.training_step_outputs[self.last_train_step :]]
-        ).mean()
+        loss = []
+        loss1 = []
+        loss1_a = []
+        loss_list = []
+        loss_logit = []
+        loss2 = []
+        scores = []
+        y = []
+        for i in self.training_step_outputs[self.last_train_step :]:
+            loss.append(i["loss"])
+            loss1.append(i["loss1"])
+            loss2.append(i["loss2"])
+            scores.append(i["y"])
+            y.append(i["true_label"])
+            if "loss1_a" in i:
+                loss1_a.append(i["loss1_a"])
+            if "loss_list" in i:
+                loss_list.append(i["loss_list"])
+            if "loss_logit" in i:
+                loss_logit.append(i["loss_logit"])
 
-        loss1 = torch.stack(
-            [x["loss1"] for x in self.training_step_outputs[self.last_train_step :]]
-        ).mean()
-
-        if "loss_list" in self.training_step_outputs[-1]:
-            loss_mle = torch.stack(
-                [
-                    x["loss_list"]
-                    for x in self.training_step_outputs[self.last_train_step :]
-                ]
-            ).mean()
-
-        if len(self.additional_label_weights) > 0:
-            loss1_a = torch.stack(
-                [
-                    x["loss1_a"]
-                    for x in self.training_step_outputs[self.last_train_step :]
-                ]
-            ).mean()
-        loss2 = torch.stack(
-            [x["loss2"] for x in self.training_step_outputs[self.last_train_step :]]
-        ).mean()
-        scores = torch.concatenate(
-            [x["y"] for x in self.training_step_outputs[self.last_train_step :]]
-        )
-        y = torch.concatenate(
-            [
-                x["true_label"]
-                for x in self.training_step_outputs[self.last_train_step :]
-            ]
-        )
+        loss = torch.stack(loss).mean()
+        loss1 = torch.stack(loss1).mean()
+        loss2 = torch.stack(loss2).mean()
+        scores = torch.cat(scores)
+        y = torch.cat(y)
         acc = self.acc(scores, y)
+        log_dict = {
+            "predict loss": loss1,
+            "adversial loss": loss2,
+            "loss": loss,
+            "acc": acc,
+        }
+
+        if len(loss_list) > 0:
+            loss_list = torch.stack(loss_list).mean()
+            log_dict["list loss"] = loss_list
+        if len(loss_logit) > 0:
+            loss_logit = torch.stack(loss_logit).mean()
+            log_dict["logits loss"] = loss_logit
+        if len(loss1_a) > 0:
+            loss1_a = torch.stack(loss1_a).mean()
+            log_dict["additional loss"] = loss1_a
 
         self.last_train_step = len(self.training_step_outputs)
-
-        log_dict = {
-            "train predict loss": loss1,
-            "train adversial loss": loss2,
-            "train loss": loss,
-            "train acc": acc,
-        }
-        if len(self.additional_label_weights) != 0:
-            log_dict["train additional loss"] = loss1_a
-
-        if "loss_list" in self.training_step_outputs[-1]:
-            log_dict["train list loss"] = loss_mle
 
         self.log_dict(
             log_dict,
@@ -560,6 +668,7 @@ class IonBaseclf(L.LightningModule):
         scores = []
         y = []
         loss_mle = []
+        loss_logit = []
 
         for i in outputs:
             if "loss" in i:
@@ -570,43 +679,50 @@ class IonBaseclf(L.LightningModule):
                 y.append(i["true_label"])
             if "y" in i:
                 scores.append(i["y"])
+            if "loss_logit" in i:
+                loss_logit.append(i["loss_logit"])
 
         loss = torch.stack([i["loss"] for i in outputs]).mean()
         y = torch.concatenate([i["true_label"] for i in outputs])
         scores = torch.concatenate([i["y"] for i in outputs])
         # print(scores, y)
         outputs.clear()
-        if len(loss_mle) == 0:
-            return loss, self.acc(scores, y).cpu()
-        else:
+        losses = {"loss": loss}
+        if len(loss_mle) > 0:
             loss_mle = torch.stack(loss_mle).mean()
-            return (loss.item(), loss_mle.item()), self.acc(scores, y).cpu().item()
+            losses["list_loss"] = loss_mle
+        if len(loss_logit) > 0:
+            loss_logit = torch.stack(loss_logit).mean()
+            losses["logit"] = loss_logit
+        return losses, self.acc(scores, y).cpu().item()
+        # if len(loss_mle) == 0:
+        #     return loss, self.acc(scores, y).cpu()
+        # else:
+        #     loss_mle = torch.stack(loss_mle).mean()
+        #     return (loss.item(), loss_mle.item()), self.acc(scores, y).cpu().item()
 
     def on_training_epoch_end(self):
 
-        loss, acc = self._common_epoch_end(self.training_step_outputs)
+        losses, acc = self._common_epoch_end(self.training_step_outputs)
 
-        if isinstance(loss, tuple):
-            print(
-                "\nfinish training epoch, loss %f, acc %f, list_mle %f\n"
-                % (loss[0], acc, loss[1])
-            )
+        if isinstance(losses, dict):
+            print("\nfinish training epoch acc %f, loss:" % acc, losses, "\n")
+            d = {}
+            for i in losses:
+                d["train_" + i] = losses[i]
+            d["train_acc"] = acc
             self.self.log_dict(
-                {
-                    "train_loss": loss[0],
-                    "train_acc": acc,
-                    "list_mle": loss[1],
-                },
+                d,
                 on_step=False,
                 on_epoch=True,
                 prog_bar=False,
             )
 
         else:
-            print("finish training epoch, loss %f, acc %f" % (loss, acc))
+            print("finish training epoch, loss %f, acc %f" % (losses, acc))
             self.log_dict(
                 {
-                    "train_loss": loss,
+                    "train_loss": losses,
                     "train_acc": acc,
                 },
                 on_step=False,
@@ -632,11 +748,13 @@ class IonBaseclf(L.LightningModule):
         }
 
         if len(batch) == 4:
-            loss_list = self._list_training_step(batch[3])
-            loss = loss * self.active_learning_lambda + loss_list
-            if self.stage == "active_learning":
-                validation_output_dict["loss_list"] = loss_list.cpu()
-            validation_output_dict["loss"] = loss.cpu()
+            r = np.random.uniform(0.001, 0.999)
+            if self.stage == "active_learning" or r < self.list_freq:
+                loss_list = self._list_training_step(batch[3])
+                loss = loss * self.list_learning_lambda + loss_list
+                if self.stage == "active_learning":
+                    validation_output_dict["loss_list"] = loss_list.cpu()
+                validation_output_dict["loss"] = loss.cpu()
 
         self.validation_step_outputs.append(validation_output_dict)
 
@@ -648,28 +766,25 @@ class IonBaseclf(L.LightningModule):
         # if not self.cache_list:
         #     self.embedding_cache.clear()
 
-        loss, acc = self._common_epoch_end(self.validation_step_outputs)
-        if isinstance(loss, tuple):
+        losses, acc = self._common_epoch_end(self.validation_step_outputs)
+        if isinstance(losses, dict):
 
-            print(
-                "\n finish validating, loss %f, acc %f, list_loss %f \n"
-                % (loss[0], acc, loss[1]),
-            )
+            print("\n finish validating acc: %f loss:" % acc, losses, "\n")
+            d = {}
+            for i in losses:
+                d["validate_" + i] = losses[i]
+            d["validate_acc"] = acc
             self.log_dict(
-                {
-                    "validate_loss": loss[0],
-                    "validate_acc": acc,
-                    "validate_list_loss": loss[1],
-                },
+                d,
                 on_step=False,
                 logger=True,
                 on_epoch=True,
                 prog_bar=False,
             )
         else:
-            print("\n finish validating, loss %f, acc %f \n" % (loss, acc))
+            print("\n finish validating, loss %f, acc %f \n" % (losses, acc))
             self.log_dict(
-                {"validate_loss": loss, "validate_acc": acc},
+                {"validate_loss": losses, "validate_acc": acc},
                 on_step=False,
                 logger=True,
                 on_epoch=True,
@@ -694,11 +809,11 @@ class IonBaseclf(L.LightningModule):
                 ):
                     self.additional_label_weights *= self.weight_step
 
-        if self.step_lambda:
+        if self.step_lambda > 1.0:
             if self.thres[1] < acc:
-                self.lamb = min(self.lamb * self.step, self.max_lambda)
+                self.lamb = min(self.lamb * self.step_lambda, self.max_lambda)
             if self.thres[0] > acc:
-                self.lamb = max(self.lamb / self.step, 0.1)
+                self.lamb = max(self.lamb / self.step_lambda, 0.1)
 
         print("lambda", self.lamb)
 
@@ -708,7 +823,11 @@ class IonBaseclf(L.LightningModule):
         return y_pre
 
     def predict_batch(self, batch):
-        pre, _ = self(batch)
+        # print(batch, self(batch))
+        if self.logits >= 0.0:
+            pre, _, _ = self(batch)
+        else:
+            pre, _ = self(batch)
 
         if len(self.additional_label_weights) == 0:
             pre0 = pre.squeeze()
@@ -771,17 +890,20 @@ class IonBaseclf(L.LightningModule):
             for i, j in self.named_parameters():
                 if j.requires_grad:
                     if "esm" in i:
-                        if "lora" in i:
+                        # sequence_heads or lora weights
+                        if "lora" in i or "sequence_head" in i:
                             l3.append(j)
+                        # original esm weights or or norm weights
                         else:
                             l1.append(j)
                     else:
+                        # classifier weights
                         l2.append(j)
 
             param_dicts = [
                 {
                     "params": l1,
-                    "lr": self.lr_backbone / 5,
+                    "lr": self.lr_backbone / 2,
                 },
                 {
                     "params": l3,
@@ -860,7 +982,7 @@ class IonclfESM3(IonBaseclf):
 
         self.esm_model = esm_model
 
-    def getEmbedding(self, input_dict):
+    def getEmbedding(self, input_dict, return_logits=False):
 
         for i in ["seq_t", "structure_t", "ss8_t", "sasa_t"]:
             if i not in input_dict:
@@ -877,6 +999,9 @@ class IonclfESM3(IonBaseclf):
         )
 
         x = representations.embeddings
+        h = representations.sequence_logits
+        if return_logits:
+            return x, h
 
         return x
 
@@ -906,10 +1031,13 @@ class IonclfESM2(IonBaseclf):
 
         self.esm_model = esm_model
 
-    def getEmbedding(self, x):
+    def getEmbedding(self, x, return_logits=False):
         representations = self.esm_model(x, repr_layers=[self.num_layers])
 
         x = representations["representations"][self.num_layers][:, 0]
+        h = representations["logits"]
+        if return_logits:
+            return x, h
         return x
 
     def on_save_checkpoint(self, checkpoint):
@@ -936,7 +1064,7 @@ class IonclfESMC(IonBaseclf):
 
         self.esm_model = esm_model
 
-    def getEmbedding(self, input_dict):
+    def getEmbedding(self, input_dict, return_logits=False):
 
         assert "seq_t" in input_dict
         inputs = input_dict["seq_t"]
@@ -948,6 +1076,9 @@ class IonclfESMC(IonBaseclf):
         )
 
         x = representations.embeddings
+        h = representations.sequence_logits
+        if return_logits:
+            return x, h
         return x
 
     # def forward(self, input_dict):
@@ -1081,6 +1212,14 @@ class SeqTransformer(nn.Module):
         self.sa4 = SelfAttention(self.step_dim, 4)
         self.sa5 = SelfAttention(self.step_dim, 4)
 
+        self.output_head = nn.Sequential(
+            nn.Linear(self.step_dim, self.step_dim),
+            nn.ReLU(),
+            nn.Linear(self.step_dim, self.step_dim),
+            nn.ReLU(),
+            nn.Linear(self.step_dim, 35),
+        )
+
     def inipos(self, channels):
         inv_freq = 1.0 / (
             (2000 * 10) ** (torch.arange(0, channels, 2).float() / channels)
@@ -1120,7 +1259,8 @@ class SeqTransformer(nn.Module):
         x = self.sa3(x)
         x = self.sa4(x)
         x = self.sa5(x)
-        return x
+        h = self.output_head(x)
+        return x, h
 
 
 class IonclfBaseline(IonBaseclf):
@@ -1138,8 +1278,11 @@ class IonclfBaseline(IonBaseclf):
 
         self.feature_extract = SeqTransformer(embed_dim, pos_dim)
 
-    def getEmbedding(self, input_dict):
-        return self.feature_extract(input_dict)
+    def getEmbedding(self, input_dict, return_logits=False):
+        x, h = self.feature_extract(input_dict)
+        if return_logits:
+            return x, h
+        return x
 
 
 def fixParameters(model, unfix=["9", "10", "11"], fix=[]):

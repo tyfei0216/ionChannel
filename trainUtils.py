@@ -37,6 +37,18 @@ def loadesm3(configs):
         "transformer.blocks." + str(s) + "."
         for s in configs["pretrain_model"]["add_lora"]
     ]
+
+    unfixes = configs["pretrain_model"]["unfix_layers"]
+    if (
+        "unlock_norm_weights" in configs["pretrain_model"]
+        and configs["pretrain_model"]["unlock_norm_weights"]
+    ):
+        unfixes.append("norm.weight")
+        unfixes.append("layernorm_qkv.0.weight")
+        unfixes.append("layernorm_qkv.0.bias")
+        unfixes.append("q_ln.weight")
+        unfixes.append("k_ln.weight")
+
     model = models.fixParameters(model, unfix=configs["pretrain_model"]["unfix_layers"])
     model = models.addlora(
         model,
@@ -57,6 +69,17 @@ def loadesmc(configs):
         "transformer.blocks." + str(s) + "."
         for s in configs["pretrain_model"]["add_lora"]
     ]
+    unfixes = configs["pretrain_model"]["unfix_layers"]
+    if (
+        "unlock_norm_weights" in configs["pretrain_model"]
+        and configs["pretrain_model"]["unlock_norm_weights"]
+    ):
+        unfixes.append("norm.weight")
+        unfixes.append("layernorm_qkv.0.weight")
+        unfixes.append("layernorm_qkv.0.bias")
+        unfixes.append("q_ln.weight")
+        unfixes.append("k_ln.weight")
+
     model = models.fixParameters(model, unfix=configs["pretrain_model"]["unfix_layers"])
     model = models.addlora(
         model,
@@ -149,8 +172,14 @@ def loadDatasetesm3(configs):
             configs["augmentation"]["maskp"], configs["augmentation"]["maskpc"]
         )
     ]
+    maskpp = (
+        configs["augmentation"]["maskpp"]
+        if "maskpp" in configs["augmentation"]
+        else None
+    )
+
     aug = VirusDataset.DataAugmentation(
-        step_points, maskp, crop, lens, tracks=configs["dataset"]["tracks"]
+        step_points, maskp, crop, lens, maskpp, tracks=configs["dataset"]["tracks"]
     )
 
     ds1 = VirusDataset.ESM3MultiTrackDataset(
@@ -204,7 +233,13 @@ def loadBalancedDatasetesm3args(configs):
     ]
     tracks = configs["augmentation"]["tracks"]
 
-    aug = VirusDataset.DataAugmentation(step_points, maskp, crop, lens, tracks)
+    maskpp = (
+        configs["augmentation"]["maskpp"]
+        if "maskpp" in configs["augmentation"]
+        else None
+    )
+
+    aug = VirusDataset.DataAugmentation(step_points, maskp, crop, lens, maskpp, tracks)
 
     if "required_labels" not in configs["dataset"]:
         configs["dataset"]["required_labels"] = []
@@ -243,6 +278,12 @@ def loadBalancedDatasetesm3list(configs):
     for i in configs["dataset"]["list"]:
         data = loadPickle(i)
         active_learning_list.append(data)
+
+    if len(active_learning_list) > 0:
+        import resource
+
+        rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
 
     if "list_size" not in configs["dataset"]:
         configs["dataset"]["list_size"] = 50
@@ -357,6 +398,7 @@ def buildesm3Model(configs, model):
 
     if "additional_label_weights" not in configs["model"]:
         configs["model"]["additional_label_weights"] = []
+        configs["dataset"]["required_labels"] = []
 
     assert len(configs["model"]["additional_label_weights"]) == len(
         configs["dataset"]["required_labels"]
@@ -373,11 +415,10 @@ def buildesm3Model(configs, model):
     clsmodel = models.IonclfESM3(
         model,
         step_lambda=configs["model"]["lambda_adapt"],
-        lamb=configs["model"]["lambda_ini"],
+        lambda_ini=configs["model"]["lambda_ini"],
         max_lambda=configs["model"]["max_lambda"],
         step=configs["model"]["lambda_step"],
-        p=configs["model"]["dropout"],
-        thres=configs["model"]["lambda_thres"],
+        lambda_thres=configs["model"]["lambda_thres"],
         lr=configs["model"]["lr"],
         lr_backbone=configs["model"]["lr_backbone"],
         clf=configs["model"]["clf"],
@@ -385,7 +426,7 @@ def buildesm3Model(configs, model):
         dis=configs["model"]["dis"],
         dis_params=configs["model"]["dis_params"],
         weight_decay=configs["model"]["weight_decay"],
-        addition_label_weights=configs["model"]["additional_label_weights"],
+        additional_label_weights=configs["model"]["additional_label_weights"],
     )
     return clsmodel
 
@@ -546,7 +587,18 @@ def buildTrainer(configs, args):
     #         "tb_logs/%s" % args.name
     #     ),
     # )
-    logger = TensorBoardLogger("tb_logs", name=args.name)
+    logger_path = (
+        configs["train"]["logger_path"]
+        if "logger_path" in configs["train"]
+        else "tb_logs"
+    )
+    name = (
+        configs["train"]["name"]
+        if "name" in configs["train"]
+        else os.path.basename(args.path)
+    )
+    name = args.name if args.name is not None else name
+    logger = TensorBoardLogger(logger_path, name=name)
 
     if args.strategy == "deep":
         args.strategy = pytorch_lightning.strategies.DeepSpeedStrategy()
@@ -555,6 +607,8 @@ def buildTrainer(configs, args):
 
     if "gradient_clip_val" not in configs["train"]:
         configs["train"]["gradient_clip_val"] = None
+
+    configs["train"]["accumulate_grad_batches"] //= len(args.devices)
 
     trainer = pytorch_lightning.Trainer(
         strategy=args.strategy,

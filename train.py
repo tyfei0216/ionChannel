@@ -13,7 +13,7 @@ def parseArgs():
     parser.add_argument("-p", "--path", type=str, required=True)
     parser.add_argument("-d", "--devices", type=int, nargs="+", default=[0])
     parser.add_argument("-s", "--strategy", type=str, default="auto")
-    parser.add_argument("-n", "--name", type=str, default="ion_test")
+    parser.add_argument("-n", "--name", type=str, default=None)
     parser.add_argument("-c", "--checkpoint", type=str, default=None)
     args = parser.parse_args()
     return args

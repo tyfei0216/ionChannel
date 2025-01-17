@@ -163,3 +163,26 @@ def ERcorrelation(path, col="experiment_1"):
     print(stats.spearmanr(df["new"], -df[col]))
 
     return df
+
+
+def resultDataframe(res, configs):
+
+    if isinstance(res[0], tuple):
+        labels = (
+            configs["dataset"]["required_labels"]
+            if "required_labels" in configs["dataset"]
+            else None
+        )
+        res0 = [r[0] for r in res]
+        res1 = [r[1] for r in res]
+        res0 = torch.stack(res0).numpy()
+        res1 = torch.stack(res1).numpy()
+        df = pd.DataFrame(res1, columns=labels)
+        df["prediction"] = res0
+
+    else:
+        res0 = torch.stack(res).numpy()
+
+        df = pd.DataFrame(res0, columns=["prediction"])
+
+    return df, res0
