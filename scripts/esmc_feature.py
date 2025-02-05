@@ -8,6 +8,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 import pandas as pd
 import torch
 from esm.models.esm3 import ESM3
+from esm.models.esmc import ESMC
 from esm.sdk.api import ESMProtein, GenerationConfig
 from tqdm import tqdm
 
@@ -17,7 +18,7 @@ import ioutils
 
 def ParseArgs():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-m", "--model", type=str, default="esm3_sm_open_v1")
+    parser.add_argument("-m", "--model", type=str, default="esmc_600m")
     parser.add_argument("-f", "--fasta", type=str, required=True)
     parser.add_argument("-s", "--save", type=str, required=True)
     parser.add_argument("--seed", type=int, default=1509)
@@ -30,8 +31,8 @@ def ParseArgs():
 
 def main():
     args = ParseArgs()
-    if args.model == "esm3_sm_open_v1":
-        model = ESM3.from_pretrained("esm3_sm_open_v1", device="cpu")
+    if args.model == "esmc_600m":
+        model = ESMC.from_pretrained("esmc_600m")
     else:
         raise NotImplementedError
 
@@ -53,16 +54,17 @@ def main():
                     continue
                 torch.manual_seed(args.seed)
                 protein = ESMProtein(sequence=seq[1])
-                protein = model.generate(
-                    protein,
-                    GenerationConfig(track="secondary_structure", num_steps=args.steps),
-                )
-                protein = model.generate(
-                    protein, GenerationConfig(track="sasa", num_steps=args.steps)
-                )
-                protein = model.generate(
-                    protein, GenerationConfig(track="structure", num_steps=args.steps)
-                )
+                # res_s = model.encode(protein)
+                # protein = model.generate(
+                #     protein,
+                #     GenerationConfig(track="secondary_structure", num_steps=args.steps),
+                # )
+                # protein = model.generate(
+                #     protein, GenerationConfig(track="sasa", num_steps=args.steps)
+                # )
+                # protein = model.generate(
+                #     protein, GenerationConfig(track="structure", num_steps=args.steps)
+                # )
                 res = model.encode(protein)
                 data = {}
                 data["randomseed"] = args.seed
@@ -71,10 +73,10 @@ def main():
                 data["ori_seq"] = seq[1]
                 data["steps"] = args.steps
                 data["seq_t"] = res.sequence.cpu().numpy()
-                data["structure_t"] = res.structure.cpu().numpy()
-                data["second_t"] = res.secondary_structure.cpu().numpy()
-                data["sasa_t"] = res.sasa.cpu().numpy()
-                data["coordinates"] = res.coordinates.cpu().numpy()
+                # data["structure_t"] = res.structure.cpu().numpy()
+                # data["second_t"] = res.secondary_structure.cpu().numpy()
+                # data["sasa_t"] = res.sasa.cpu().numpy()
+                # data["coordinates"] = res.coordinates.cpu().numpy()
                 allres.append(data)
             except:
                 pass

@@ -343,9 +343,14 @@ def loadDataset(configs) -> pytorch_lightning.LightningDataModule:
 
 def buildSimpleModel(configs, model=None):
     if "params" in configs["model"]:
-        clsmodel = models.IonclfBaseline(**configs["model"]["params"])
+        config = models.IonclfConfig(**configs["model"]["params"])
+        clsmodel = models.IonclfBaseline(
+            config,
+            embed_dim=configs["model"]["embed_dim"],
+            pos_dim=configs["model"]["pos_dim"],
+        )
         return clsmodel
-    clsmodel = models.IonclfBaseline(
+    config = models.IonclfConfig(
         step_lambda=configs["model"]["lambda_adapt"],
         lamb=configs["model"]["lambda_ini"],
         max_lambda=configs["model"]["max_lambda"],
@@ -364,15 +369,22 @@ def buildSimpleModel(configs, model=None):
         weight_step=configs["model"]["weight_step"],
         dis_loss="bce",
     )
+    clsmodel = models.IonclfBaseline(
+        config,
+        embed_dim=configs["model"]["embed_dim"],
+        pos_dim=configs["model"]["pos_dim"],
+    )
+
     return clsmodel
 
 
 def buildesm2Model(configs, model):
     if "params" in configs["model"]:
-        clsmodel = models.IonclfESM2(model, **configs["model"]["params"])
+        config = models.IonclfConfig(**configs["model"]["params"])
+        clsmodel = models.IonclfESM2(model, config, configs["model"]["num_layers"])
+        # clsmodel = models.IonclfESM2(model, **configs["model"]["params"])
         return clsmodel
-    clsmodel = models.IonclfESM2(
-        model,
+    config = models.IonclfConfig(
         step_lambda=configs["model"]["lambda_adapt"],
         lambda_ini=configs["model"]["lambda_ini"],
         max_lambda=configs["model"]["max_lambda"],
@@ -382,13 +394,20 @@ def buildesm2Model(configs, model):
         lr=configs["model"]["lr"],
         weight_decay=configs["model"]["weight_decay"],
     )
+    clsmodel = models.IonclfESM2(
+        model,
+        config,
+        num_layers=configs["model"]["num_layers"],
+    )
     return clsmodel
 
 
 def buildesm3Model(configs, model):
 
     if "params" in configs["model"]:
-        clsmodel = models.IonclfESM3(model, **configs["model"]["params"])
+        config = models.IonclfConfig(**configs["model"]["params"])
+        clsmodel = models.IonclfESM3(model, config)
+        # clsmodel = models.IonclfESM3(model, **configs["model"]["params"])
         return clsmodel
 
     if "clf_params" not in configs["model"]:
@@ -412,8 +431,7 @@ def buildesm3Model(configs, model):
     if "more params" not in configs["model"]:
         configs["model"]["more params"] = {}
 
-    clsmodel = models.IonclfESM3(
-        model,
+    config = models.IonclfConfig(
         step_lambda=configs["model"]["lambda_adapt"],
         lambda_ini=configs["model"]["lambda_ini"],
         max_lambda=configs["model"]["max_lambda"],
@@ -428,6 +446,12 @@ def buildesm3Model(configs, model):
         weight_decay=configs["model"]["weight_decay"],
         additional_label_weights=configs["model"]["additional_label_weights"],
     )
+
+    clsmodel = models.IonclfESM3(
+        model,
+        config,
+    )
+
     return clsmodel
 
 
@@ -460,7 +484,11 @@ def buildesm3cModel(configs, model):
     # print("esm3c model")
     if "params" in configs["model"]:
         # print("using config params")
-        clsmodel = models.IonclfESMC(model, **configs["model"]["params"])
+        config = models.IonclfConfig(**configs["model"]["params"])
+        # print(configs["model"]["params"])
+        # print(config)
+        clsmodel = models.IonclfESMC(model, config)
+        # clsmodel = models.IonclfESMC(model, **configs["model"]["params"])
     else:
         if "additional_label_weights" not in configs["model"]:
             configs["model"]["additional_label_weights"] = []
@@ -470,9 +498,7 @@ def buildesm3cModel(configs, model):
         assert len(configs["model"]["additional_label_weights"]) == len(
             configs["dataset"]["required_labels"]
         )
-
-        clsmodel = models.IonclfESMC(
-            model,
+        config = models.IonclfConfig(
             stage=configs["model"]["stage"],
             step_lambda=configs["model"]["lambda_adapt"],
             lambda_ini=configs["model"]["lambda_ini"],
@@ -493,6 +519,7 @@ def buildesm3cModel(configs, model):
             weight_step=configs["model"]["weight_step"],
             dis_loss=configs["model"]["dis_loss"],
         )
+        clsmodel = models.IonclfESMC(model, config)
     return clsmodel
 
 

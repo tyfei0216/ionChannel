@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics
+from attr import dataclass
 from torch.autograd import Function
 from torch.optim.optimizer import Optimizer
 
@@ -236,6 +237,49 @@ class ListMLE(nn.Module):
         return torch.sum(sumx)
 
 
+@dataclass
+class IonclfConfig:
+    stage: str = "base_learning"
+
+    addadversial: bool = True
+    lambda_ini: float = 0.1
+    step_lambda: float = 1.5
+    max_lambda: float = 6
+    lambda_thres: float = 0.95
+    dis_loss: str = "bce"
+    dis: str = "linear"
+    dis_params: dict = {}
+
+    lr: float = 5e-4
+    lr_backbone: float = 1e-5
+    weight_decay: float = 0.005
+
+    clf: str = "linear"
+    clf_params: dict = {}
+
+    addition_clf: str = "linear"
+    addition_clf_params: dict = {}
+    additional_label_weights: list[float] = []
+    weight_step: float = 1.2
+    weight_max: float = 15.0
+    pos_weights: list[float] = None
+
+    logits: float = -1.0
+    mask_weight: float = 0.0
+    logit_dim: int = 64
+
+    list_freq: float = 1.0
+    list_learning_lambda: float = 1.0
+    mean_target: float = None
+    std_target: float = None
+    list_activate: str = "None"
+    max_val: float = 30.0
+    eps: float = 1e-8
+    cache_list: bool = True
+
+    bayes_predict: int = -1
+
+
 class IonBaseclf(L.LightningModule):
     """
     base class for the ion channel classifier, handles training process and
@@ -250,77 +294,50 @@ class IonBaseclf(L.LightningModule):
 
     def __init__(
         self,
-        addadversial=True,
-        lambda_ini=0.1,
-        lr=5e-4,
-        lr_backbone=None,
-        step_lambda=1.5,
-        max_lambda=6,
-        lambda_thres=0.95,
-        weight_decay=0.005,
-        additional_label_weights=[],
-        dis_loss="bce",
-        list_learning_lambda=1.0,
-        max_val=30,
-        eps=1e-8,
-        cache_list=True,
-        weight_step=1.2,
-        weight_max=15,
-        stage="base_learning",
-        pos_weights=None,
-        clf="linear",
-        clf_params={},
-        addition_clf="linear",
-        addition_clf_params={},
-        dis="linear",
-        dis_params={},
-        list_freq=1.0,
-        mean_target=None,
-        std_target=None,
-        list_activate="None",
-        bayes_predict=-1,
-        logits=-1,
-        mask_weight=0.0,
-        logit_dim=64,
+        config: IonclfConfig,
     ):
         super().__init__()
-        self.addadversial = addadversial
-        if not isinstance(additional_label_weights, torch.Tensor):
-            additional_label_weights = torch.tensor(
-                additional_label_weights, requires_grad=False
+        # print(config.pos_weights, config.additional_label_weights)
+        self.addadversial = config.addadversial
+
+        if not isinstance(config.additional_label_weights, torch.Tensor):
+            config.additional_label_weights = torch.tensor(
+                config.additional_label_weights, requires_grad=False
             )
         # self.additional_label_weights = additional_label_weights
 
-        additional_label_weights = torch.nn.Parameter(additional_label_weights)
+        additional_label_weights = torch.nn.Parameter(config.additional_label_weights)
         self.register_parameter("additional_label_weights", additional_label_weights)
         self.additional_label_weights.requires_grad = False
 
-        self.weight_step = weight_step
-        self.weight_max = weight_max
-        if pos_weights is None:
-            pos_weights = torch.ones_like(additional_label_weights)
+        self.weight_step = config.weight_step
+        self.weight_max = config.weight_max
+        if config.pos_weights is None:
+            config.pos_weights = torch.ones_like(config.additional_label_weights)
 
-        if not isinstance(pos_weights, torch.Tensor):
-            pos_weights = torch.tensor(pos_weights, requires_grad=False)
-        assert len(pos_weights) == len(additional_label_weights)
+        if not isinstance(config.pos_weights, torch.Tensor):
+            pos_weights = torch.tensor(config.pos_weights, requires_grad=False)
+
         # print(pos_weights)
         pos_weights = torch.nn.Parameter(pos_weights)
         self.register_parameter("pos_weights", pos_weights)
         self.pos_weights.requires_grad = False
+        # print(self.pos_weights, self.additional_label_weights)
+        assert len(self.pos_weights) == len(self.additional_label_weights)
         # print(pos_weights.shape, additional_label_weights.shape)
         # assert len(pos_weights) == len(additional_label_weights)
 
-        self.addadversial = addadversial
+        self.addadversial = config.addadversial
         self.reverse = GradientReversal(1)
 
-        self.lamb = lambda_ini
-        self.step_lambda = step_lambda
-        self.max_lambda = max_lambda
-        self.thres = lambda_thres
+        self.lamb = config.lambda_ini
+        self.step_lambda = config.step_lambda
+        self.max_lambda = config.max_lambda
+        self.thres = config.lambda_thres
         self.update_epoch = False
-        self.lr = lr
-        self.weight_decay = weight_decay
-        self.lr_backbone = lr_backbone
+        self.lr = config.lr
+        self.weight_decay = config.weight_decay
+        self.lr_backbone = config.lr_backbone
 
         self.acc = torchmetrics.Accuracy(task="binary")
 
@@ -331,55 +348,54 @@ class IonBaseclf(L.LightningModule):
 
         self.load_freeze = None
 
-        self.dis_loss = dis_loss
+        self.dis_loss = config.dis_loss
 
-        self.listmle = ListMLE(max_val=max_val, eps=eps)
+        self.listmle = ListMLE(max_val=config.max_val, eps=config.eps)
 
-        self.list_learning_lambda = list_learning_lambda
+        self.list_learning_lambda = config.list_learning_lambda
 
-        self.cache_list = cache_list
+        self.cache_list = config.cache_list
 
         self.embedding_cache = {}
 
-        self.mean_target = mean_target
-        self.std_target = std_target
-        self.list_freq = list_freq
-        self.list_activate = list_activate
+        self.mean_target = config.mean_target
+        self.std_target = config.std_target
+        self.list_freq = config.list_freq
+        self.list_activate = config.list_activate
 
-        self.bayes_predict = bayes_predict
+        self.bayes_predict = config.bayes_predict
 
-        self.stage = stage
+        assert config.stage in ["base_learning", "active_learning"]
 
-        assert stage in ["base_learning", "active_learning"]
+        self.stage = config.stage
+        print("initized model for %s stage" % config.stage)
 
-        print("initized model for %s stage" % stage)
+        assert config.clf in ["linear", "cnn"]
+        assert config.dis in ["linear", "cnn"]
 
-        assert clf in ["linear", "cnn"]
-        assert dis in ["linear", "cnn"]
-
-        if clf == "cnn":
-            self.clf = CNNcls(**clf_params)
+        if config.clf == "cnn":
+            self.clf = CNNcls(**config.clf_params)
         else:
-            self.clf = Linearcls(**clf_params)
+            self.clf = Linearcls(**config.clf_params)
 
-        if dis == "cnn":
-            self.dis = CNNcls(**dis_params)
+        if config.dis == "cnn":
+            self.dis = CNNcls(**config.dis_params)
         else:
-            self.dis = Linearcls(**dis_params)
+            self.dis = Linearcls(**config.dis_params)
 
-        if addition_clf is not None:
-            assert addition_clf in ["linear", "cnn"]
-            self.additional_clf = Linearcls(**addition_clf_params)
+        if config.addition_clf is not None:
+            assert config.addition_clf in ["linear", "cnn"]
+            self.additional_clf = Linearcls(**config.addition_clf_params)
         else:
             self.additional_clf = None
 
         self.cross_entropy = nn.CrossEntropyLoss(reduction="none")
 
-        self.logits = logits
+        self.logits = config.logits
 
-        self.mask_weight = mask_weight
+        self.mask_weight = config.mask_weight
 
-        self.logit_dim = logit_dim
+        self.logit_dim = config.logit_dim
 
     def getScore(self, input_dict, idx=None):
         """only used for active learning stage
@@ -972,13 +988,9 @@ class IonclfESM3(IonBaseclf):
     def __init__(
         self,
         esm_model,
-        *args,
-        **kwargs,
+        config: IonclfConfig,
     ) -> None:
-        super().__init__(
-            *args,
-            **kwargs,
-        )
+        super().__init__(config)
 
         self.esm_model = esm_model
 
@@ -1018,13 +1030,11 @@ class IonclfESM2(IonBaseclf):
     def __init__(
         self,
         esm_model,
+        config: IonclfConfig,
         num_layers=33,
-        *args,
-        **kwargs,
     ) -> None:
         super().__init__(
-            *args,
-            **kwargs,
+            config=config,
         )
 
         self.num_layers = num_layers
@@ -1053,12 +1063,10 @@ class IonclfESMC(IonBaseclf):
     def __init__(
         self,
         esm_model,
-        *args,
-        **kwargs,
+        config: IonclfConfig,
     ) -> None:
         super().__init__(
-            *args,
-            **kwargs,
+            config=config,
         )
         self.save_hyperparameters(ignore=["esm_model"])
 
@@ -1266,14 +1274,12 @@ class SeqTransformer(nn.Module):
 class IonclfBaseline(IonBaseclf):
     def __init__(
         self,
+        config: IonclfConfig,
         embed_dim=128,
         pos_dim=32,
-        *args,
-        **kwargs,
     ) -> None:
         super().__init__(
-            *args,
-            **kwargs,
+            config=config,
         )
 
         self.feature_extract = SeqTransformer(embed_dim, pos_dim)
