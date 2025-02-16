@@ -239,6 +239,7 @@ class ListMLE(nn.Module):
 
 @dataclass
 class IonclfConfig:
+
     stage: str = "base_learning"
 
     addadversial: bool = True
@@ -270,8 +271,11 @@ class IonclfConfig:
 
     list_freq: float = 1.0
     list_learning_lambda: float = 1.0
+    after_sigmoid: bool = True
     mean_target: float = None
+    mean_lambda: float = 1.0
     std_target: float = None
+    std_lambda: float = 1.0
     list_activate: str = "None"
     max_val: float = 30.0
     eps: float = 1e-8
@@ -297,9 +301,24 @@ class IonBaseclf(L.LightningModule):
         config: IonclfConfig,
     ):
         super().__init__()
-        # print(config.pos_weights, config.additional_label_weights)
+
+        assert config.stage in ["base_learning", "active_learning"]
+        self.stage = config.stage
+        print("initized model for %s stage" % config.stage)
+
+        # flag for domain adaptation
         self.addadversial = config.addadversial
 
+        # loss for discriminator, used for adversial training
+        self.dis_loss = config.dis_loss
+
+        # lambda for domain adaptation. updated during training
+        self.lamb = config.lambda_ini
+        self.step_lambda = config.step_lambda
+        self.max_lambda = config.max_lambda
+        self.thres = config.lambda_thres
+
+        # register additional label weights, used for multi-label classification tasks
         if not isinstance(config.additional_label_weights, torch.Tensor):
             config.additional_label_weights = torch.tensor(
                 config.additional_label_weights, requires_grad=False
@@ -312,13 +331,21 @@ class IonBaseclf(L.LightningModule):
 
         self.weight_step = config.weight_step
         self.weight_max = config.weight_max
+
+        # register positive weights for multi-label classification, used for handling class imbalance
         if config.pos_weights is None:
             config.pos_weights = torch.ones_like(config.additional_label_weights)
 
         if not isinstance(config.pos_weights, torch.Tensor):
             pos_weights = torch.tensor(config.pos_weights, requires_grad=False)
+        else:
+            pos_weights = config.pos_weights
 
+        # set up boundries for the positive weights, reduce training variation
+        pos_weights[pos_weights > 10.0] = 10.0
+        pos_weights[pos_weights < 0.1] = 0.1
         # print(pos_weights)
+
         pos_weights = torch.nn.Parameter(pos_weights)
         self.register_parameter("pos_weights", pos_weights)
         self.pos_weights.requires_grad = False
@@ -327,14 +354,11 @@ class IonBaseclf(L.LightningModule):
         # print(pos_weights.shape, additional_label_weights.shape)
         # assert len(pos_weights) == len(additional_label_weights)
 
-        self.addadversial = config.addadversial
+        # adversial training, used to filp the gradient of the feature extractor
         self.reverse = GradientReversal(1)
 
-        self.lamb = config.lambda_ini
-        self.step_lambda = config.step_lambda
-        self.max_lambda = config.max_lambda
-        self.thres = config.lambda_thres
-        self.update_epoch = False
+        # self.update_epoch = False
+        # parameters for training
         self.lr = config.lr
         self.weight_decay = config.weight_decay
         self.lr_backbone = config.lr_backbone
@@ -346,30 +370,33 @@ class IonBaseclf(L.LightningModule):
         self.training_step_outputs = []
         self.validation_step_outputs = []
 
+        # used for loading unfreezed weights, used when resuming training checkpoints,
+        # not used in current version
         self.load_freeze = None
 
-        self.dis_loss = config.dis_loss
-
+        # listMLE loss, used for active learning
         self.listmle = ListMLE(max_val=config.max_val, eps=config.eps)
 
+        # lambda for list loss,
         self.list_learning_lambda = config.list_learning_lambda
 
         self.cache_list = config.cache_list
-
+        # cache for the embeddings, used for active learning.
         self.embedding_cache = {}
 
+        # list loss hyperparameters
+        self.after_sigmoid = config.after_sigmoid
         self.mean_target = config.mean_target
+        self.mean_lambda = config.mean_lambda
         self.std_target = config.std_target
+        self.std_lambda = config.std_lambda
         self.list_freq = config.list_freq
         self.list_activate = config.list_activate
 
+        # whether to use bayes prediction, (not very useful indeed)
         self.bayes_predict = config.bayes_predict
 
-        assert config.stage in ["base_learning", "active_learning"]
-
-        self.stage = config.stage
-        print("initized model for %s stage" % config.stage)
-
+        # initialize three classifiers, one for the main task, one for the adversial task, and one for additional tasks
         assert config.clf in ["linear", "cnn"]
         assert config.dis in ["linear", "cnn"]
 
@@ -389,16 +416,16 @@ class IonBaseclf(L.LightningModule):
         else:
             self.additional_clf = None
 
+        # loss for predicting masked tokens
         self.cross_entropy = nn.CrossEntropyLoss(reduction="none")
-
         self.logits = config.logits
-
         self.mask_weight = config.mask_weight
-
         self.logit_dim = config.logit_dim
 
-    def getScore(self, input_dict, idx=None):
-        """only used for active learning stage
+        self.spearman = torchmetrics.SpearmanCorrCoef()
+
+    def getScore(self, input_dict, idx=None, cache=False):
+        """only used for list learning stage
             return the score of the input data for List loss
 
         Args:
@@ -406,7 +433,7 @@ class IonBaseclf(L.LightningModule):
         """
         # print(idx)
         with torch.no_grad():
-            if idx is not None and self.cache_list:
+            if idx is not None and self.cache_list and cache:
                 if idx in self.embedding_cache:
                     # print("cached")
                     x = self.embedding_cache[idx]
@@ -419,7 +446,9 @@ class IonBaseclf(L.LightningModule):
         pre = self.clf(x)
         return pre
 
+    # abstract method for getting the embeddings, should be implemented in the subclass
     def getEmbedding(self, x, return_logits=False):
+
         raise NotImplementedError
 
     def forward(self, input_dict):
@@ -495,7 +524,9 @@ class IonBaseclf(L.LightningModule):
             q[y2 < 0] = 0.0
             q.require_grad = False
             qq.require_grad = False
-            qq[y2 < 0] = 1.0
+            qq[y2 < 0.5] = 1.0
+            # print(qq)
+            # print(y2)
             y2[y2 < 0] = 0
             y2[y2 > 1] = 1
 
@@ -528,7 +559,7 @@ class IonBaseclf(L.LightningModule):
             loss += loss1_a
             loss1 = (loss1, loss1_a)
 
-        if loss_logit is not None:
+        if loss_logit is not None and self.logits > 0.0:
             loss += loss_logit * self.logits
             loss2 = (loss2, loss_logit)
 
@@ -537,34 +568,48 @@ class IonBaseclf(L.LightningModule):
     # def getScore(self, input_dict, idx):
     #     raise NotImplementedError
 
-    def _list_training_step(self, batch):
+    def _list_training_step(self, batch, require_mle=False):
 
         loss_list = 0
 
         scores = []
+        # print(batch)
         for i, x in enumerate(batch):
-            # print(x["id"][0])
-
-            s = self.getScore(x, x["id"][0]).squeeze()
-            # if i == 42:
-            #     print(x["seq_t"][0][12], s)
+            s = self.getScore(x, x["id"][0], require_mle).squeeze()
             scores.append(s)
         scores = torch.stack(scores)
-
+        t = scores
+        if self.after_sigmoid:
+            t = F.sigmoid(scores)
         if self.mean_target is not None:
-            loss_list += (torch.mean(F.sigmoid(scores)) - self.mean_target) ** 2
+            loss_list += self.mean_lambda * (torch.mean(t) - self.mean_target) ** 2
 
         if self.std_target is not None:
-            loss_list += (torch.std(F.sigmoid(scores)) - self.std_target) ** 2
+            loss_list += self.std_lambda * (torch.std(t) - self.std_target) ** 2
 
-        if self.stage == "active_learning":
-            if self.list_activate == "None":
-                # print(scores.requires_grad)
-                loss_list += self.listmle(scores)
-            elif self.list_activate == "sigmoid":
-                loss_list += self.listmle(F.sigmoid(scores))
-            else:
-                raise ValueError("list activate %s not supported" % self.list_activate)
+        if self.stage == "active_learning" and require_mle:
+            # if self.list_activate == "None":
+            # print(scores.requires_grad)
+            loss_list += self.listmle(scores)
+            # elif self.list_activate == "sigmoid":
+            #     loss_list += self.listmle(F.sigmoid(scores))
+            # else:
+            #     raise ValueError("list activate %s not supported" % self.list_activate)
+
+            # with torch.no_grad():
+            # from scipy.stats import spearmanr
+
+            # x = scores.detach().cpu().numpy()
+            # y = np.arange(len(x))
+            # corr = spearmanr(x, y)[0]
+            corr = self.spearman(
+                scores, torch.arange(len(scores)).float().to(scores.device)
+            )
+            # self.spearman.reset()
+            corr = corr.item()
+            # print(scores, torch.arange(len(scores)).to(scores.device))
+            return loss_list, corr
+
             # loss = self._active_training_step(batch)
             # return loss
             # loss += self.listmle(scores)
@@ -606,10 +651,14 @@ class IonBaseclf(L.LightningModule):
         if len(batch) == 4:
             r = np.random.uniform(0.001, 0.999)
             if self.stage == "active_learning" or r < self.list_freq:
-                loss_list = self._list_training_step(batch[3])
+                loss_list = self._list_training_step(batch[3][0], batch[3][1])
+                if self.stage == "active_learning" and batch[3][1]:
+                    loss_list, spearman = loss_list
+                    train_output_dict["corr"] = spearman
                 if self.stage == "active_learning":
                     train_output_dict["loss_list"] = loss_list.detach().cpu()
                 loss = loss * self.list_learning_lambda + loss_list
+
                 # loss = loss_list
                 # loss = loss_list
                 train_output_dict["loss"] = loss.detach().cpu()
@@ -630,6 +679,7 @@ class IonBaseclf(L.LightningModule):
         loss_logit = []
         loss2 = []
         scores = []
+        corr = []
         y = []
         for i in self.training_step_outputs[self.last_train_step :]:
             loss.append(i["loss"])
@@ -643,6 +693,8 @@ class IonBaseclf(L.LightningModule):
                 loss_list.append(i["loss_list"])
             if "loss_logit" in i:
                 loss_logit.append(i["loss_logit"])
+            if "corr" in i:
+                corr.append(i["corr"])
 
         loss = torch.stack(loss).mean()
         loss1 = torch.stack(loss1).mean()
@@ -663,11 +715,23 @@ class IonBaseclf(L.LightningModule):
         if len(loss_logit) > 0:
             loss_logit = torch.stack(loss_logit).mean()
             log_dict["logits loss"] = loss_logit
+
+        if len(corr) > 0:
+            corr = np.mean(corr)
+            log_dict["corr"] = corr
+
         if len(loss1_a) > 0:
             loss1_a = torch.stack(loss1_a).mean()
             log_dict["additional loss"] = loss1_a
 
         self.last_train_step = len(self.training_step_outputs)
+
+        if self.stage == "active_learning":
+            log_dict = {
+                i: j
+                for i, j in log_dict.items()
+                if i in ["corr", "list loss", "predict loss", "acc"]
+            }
 
         self.log_dict(
             log_dict,
@@ -685,6 +749,7 @@ class IonBaseclf(L.LightningModule):
         y = []
         loss_mle = []
         loss_logit = []
+        corr = []
 
         for i in outputs:
             if "loss" in i:
@@ -697,6 +762,8 @@ class IonBaseclf(L.LightningModule):
                 scores.append(i["y"])
             if "loss_logit" in i:
                 loss_logit.append(i["loss_logit"])
+            if "corr" in i:
+                corr.append(i["corr"])
 
         loss = torch.stack([i["loss"] for i in outputs]).mean()
         y = torch.concatenate([i["true_label"] for i in outputs])
@@ -710,6 +777,9 @@ class IonBaseclf(L.LightningModule):
         if len(loss_logit) > 0:
             loss_logit = torch.stack(loss_logit).mean()
             losses["logit"] = loss_logit
+        if len(corr) > 0:
+            corr = np.mean(corr)
+            losses["corr"] = corr
         return losses, self.acc(scores, y).cpu().item()
         # if len(loss_mle) == 0:
         #     return loss, self.acc(scores, y).cpu()
@@ -724,8 +794,13 @@ class IonBaseclf(L.LightningModule):
         if isinstance(losses, dict):
             print("\nfinish training epoch acc %f, loss:" % acc, losses, "\n")
             d = {}
-            for i in losses:
-                d["train_" + i] = losses[i]
+            if self.stage == "active_learning":
+                for i in losses:
+                    if i in ["list_loss", "corr"]:
+                        d["train_" + i] = losses[i]
+            else:
+                for i in losses:
+                    d["train_" + i] = losses[i]
             d["train_acc"] = acc
             self.self.log_dict(
                 d,
@@ -766,7 +841,10 @@ class IonBaseclf(L.LightningModule):
         if len(batch) == 4:
             r = np.random.uniform(0.001, 0.999)
             if self.stage == "active_learning" or r < self.list_freq:
-                loss_list = self._list_training_step(batch[3])
+                loss_list = self._list_training_step(batch[3][0], batch[3][1])
+                if self.stage == "active_learning" and batch[3][1]:
+                    loss_list, spearman = loss_list
+                    validation_output_dict["corr"] = spearman  # .cpu()
                 loss = loss * self.list_learning_lambda + loss_list
                 if self.stage == "active_learning":
                     validation_output_dict["loss_list"] = loss_list.cpu()
@@ -787,8 +865,13 @@ class IonBaseclf(L.LightningModule):
 
             print("\n finish validating acc: %f loss:" % acc, losses, "\n")
             d = {}
-            for i in losses:
-                d["validate_" + i] = losses[i]
+            if self.stage == "active_learning":
+                for i in losses:
+                    if i in ["list_loss", "corr"]:
+                        d["validate_" + i] = losses[i]
+            else:
+                for i in losses:
+                    d["validate_" + i] = losses[i]
             d["validate_acc"] = acc
             self.log_dict(
                 d,
@@ -834,9 +917,13 @@ class IonBaseclf(L.LightningModule):
         print("lambda", self.lamb)
 
     def test_step(self, batch, batch_idx):
-        x = batch
-        y_pre, _ = self(x)
-        return y_pre
+        # x = batch
+        if self.logits >= 0.0:
+            pre, _, _ = self(batch)
+        else:
+            pre, _ = self(batch)
+        # y_pre, _ = self(x)
+        return pre
 
     def predict_batch(self, batch):
         # print(batch, self(batch))
@@ -954,6 +1041,7 @@ class IonBaseclf(L.LightningModule):
         #     ]
         #     return torch.optim.Adam(param_dicts, weight_decay=self.weight_decay)
 
+        # used for resuming training, not used in current version
         if self.load_freeze is None:
             optimizer = torch.optim.Adam(
                 filter(lambda p: p.requires_grad, self.parameters()),
@@ -985,6 +1073,12 @@ class IonBaseclf(L.LightningModule):
 
 
 class IonclfESM3(IonBaseclf):
+    """_summary_
+
+    Args:
+        IonBaseclf (_type_): _description_
+    """
+
     def __init__(
         self,
         esm_model,

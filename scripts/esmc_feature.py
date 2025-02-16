@@ -50,6 +50,7 @@ def main():
     with torch.no_grad():
         for i, seq in zip(tqdm(range(len(seqss))), seqss):
             try:
+                # print(len(seq[1]))
                 if len(seq[1]) > args.lengthThres:
                     continue
                 torch.manual_seed(args.seed)
@@ -66,12 +67,12 @@ def main():
                 #     protein, GenerationConfig(track="structure", num_steps=args.steps)
                 # )
                 res = model.encode(protein)
+                # print(res)
                 data = {}
                 data["randomseed"] = args.seed
                 data["model"] = args.model
                 data["id"] = seq[0]
                 data["ori_seq"] = seq[1]
-                data["steps"] = args.steps
                 data["seq_t"] = res.sequence.cpu().numpy()
                 # data["structure_t"] = res.structure.cpu().numpy()
                 # data["second_t"] = res.secondary_structure.cpu().numpy()
@@ -80,6 +81,8 @@ def main():
                 allres.append(data)
             except:
                 pass
+
+    print("total length", len(allres))
     with open(args.save, "wb") as f:
         pickle.dump(allres, f)
 

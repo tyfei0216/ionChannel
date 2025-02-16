@@ -10,32 +10,32 @@ from torch.utils.data.sampler import SubsetRandomSampler
 
 import ioutils
 
+MIN_LENGTH = 50
+
 
 class MyDataLoader(DataLoader):
-    def __init__(self, ds, step_ds, *args, **kwargs):
-        super().__init__(ds, *args, **kwargs)
-        self.ds = ds
+    def __init__(self, ds, step_ds, **kwargs):
+        # print(kwargs)
+        super().__init__(dataset=ds, **kwargs)
+        # self.ds = ds
         self.epoch = 0
         self.step_ds = step_ds
 
     def step(self):
         # print("step dataset")
         if self.step_ds:
-            self.ds.step()
+            self.dataset.step()
 
     def __iter__(self):
         self.epoch += 1
-        self.ds.newEpoch()
+        self.dataset.newEpoch()
         if self.step_ds:
             # self.ds.step()
-            self.ds.ifaug = True
+            self.dataset.ifaug = True
         else:
-            self.ds.ifaug = False
+            self.dataset.ifaug = False
         # print("now epoch ", self.epoch)
         return super().__iter__()
-
-
-MIN_LENGTH = 50
 
 
 class DataAugmentation:
@@ -341,14 +341,16 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         self.iters = 0
         self.data1order = []
         self.data2order = []
-        self.data3order = np.arange(len(data3))
+        self.data3order = []  # np.arange(len(data3))
         self.pnts1 = [0 for i in data1]
         self.pnts2 = [0 for i in data2]
-        self.pnt3 = 0
+        self.pnt3 = [0 for i in data3]
         for i in data1:
             self.data1order.append(np.arange(len(i)))
         for i in data2:
             self.data2order.append(np.arange(len(i)))
+        for i in data3:
+            self.data3order.append(np.arange(len(i)))
         self.ifaug = False
         if pos_neg_sample is not None:
             self.pos_neg_sample = pos_neg_sample
@@ -411,8 +413,8 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
                 self.pnts2[i] += self.pos_neg_sample[1][i]
                 while self.pnts2[i] >= len(self.data2order[i]):
                     self.pnts2[i] -= len(self.data2order[i])
-            while self.pnt3 >= len(self.data3order):
-                self.pnt3 -= len(self.data3order)
+            # while self.pnt3 >= len(self.data3order):
+            #     self.pnt3 -= len(self.data3order)
 
     def getOrigin(self):
         ret = []
@@ -469,6 +471,10 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         raise KeyError
 
     def _getitemx2(self, idx):
+        q = idx % len(self.data3)
+        pickfrom = self.data3[q]
+        ret = random.choice(pickfrom)
+        return ret
         # self.pnt3 += 1
         # if self.pnt3 > len(self.data3order):
         #     self.pnt3 = 1
@@ -493,19 +499,33 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
 
 
 class ListESM3MultiTrackBalancedDataset(ESM3MultiTrackBalancedDataset):
-    def __init__(self, active_learning_lists, list_size=50, *args, **kwargs):
+    def __init__(
+        self,
+        active_learning_lists,
+        list_size=50,
+        list_require_mle=None,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.active_learning_lists = active_learning_lists
         self.list_size = list_size
+        print("using list size", list_size)
+        if list_require_mle is None:
+            list_require_mle = [False for i in range(len(active_learning_lists))]
+        self.list_require_mle = list_require_mle
+        assert len(self.list_require_mle) == len(active_learning_lists)
 
     def __getitem__(self, idx):
         res = super().__getitem__(idx)
         q = idx % len(self.active_learning_lists)
+        need_mle = self.list_require_mle[q]
         t = min(self.list_size, len(self.active_learning_lists[q]))
         t = random.sample(range(len(self.active_learning_lists[q])), t)
         t = sorted(t)
         ret = [self.active_learning_lists[q][i] for i in t]
-        return *res, ret
+
+        return *res, (ret, need_mle)
 
 
 class ListActiveLearningDataset(Dataset):
@@ -621,7 +641,10 @@ class ESM3BalancedDataModule(L.LightningDataModule):
         seed=1509,
         tracks=["seq_t", "structure_t", "sasa_t", "second_t"],
         required_labels=[],
-        lists=None,
+        train_lists=None,
+        val_lists=None,
+        train_list_require_mle=None,
+        val_list_require_mle=None,
         list_size=50,
     ):
         super().__init__()
@@ -666,7 +689,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
             self.val_indices2.append(i2)
 
         torch.manual_seed(self.seed)
-        if lists is None:
+        if train_lists is None:
             self.train_set = ESM3MultiTrackBalancedDataset(
                 self.traindata1,
                 self.traindata2,
@@ -678,8 +701,9 @@ class ESM3BalancedDataModule(L.LightningDataModule):
             )
         else:
             self.train_set = ListESM3MultiTrackBalancedDataset(
-                lists,
+                train_lists,
                 list_size,
+                train_list_require_mle,
                 self.traindata1,
                 self.traindata2,
                 self.data3,
@@ -688,7 +712,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
                 tracks=tracks,
                 required_labels=required_labels,
             )
-        if lists is None:
+        if val_lists is None:
             self.val_set = ESM3MultiTrackBalancedDataset(
                 self.valdata1,
                 self.valdata2,
@@ -700,8 +724,9 @@ class ESM3BalancedDataModule(L.LightningDataModule):
             )
         else:
             self.val_set = ListESM3MultiTrackBalancedDataset(
-                lists,
+                val_lists,
                 list_size,
+                val_list_require_mle,
                 self.valdata1,
                 self.valdata2,
                 self.data3,
@@ -738,6 +763,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
     def predict_dataloader(self):
         self.value += 1
         print("get predict loader")
+        return DataLoader(self.val_set, batch_size=self.batch_size, shuffle=False)
         return MyDataLoader(
             self.test_set,
             False,

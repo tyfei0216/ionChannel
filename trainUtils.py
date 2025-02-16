@@ -221,7 +221,7 @@ def loadBalancedDatasetesm3args(configs):
         data = loadPickle(i)
         for j in data:
             lens.append(len(j["ori_seq"]))
-        test_datasets.extend(data)
+        test_datasets.append(data)
 
     step_points = configs["augmentation"]["step_points"]
     crop = configs["augmentation"]["crop"]
@@ -271,25 +271,14 @@ def loadBalancedDatasetesm3(configs):
     return ds
 
 
-def loadBalancedDatasetesm3list(configs):
-    import VirusDataset
-
+def loadList(data_list, cnt=0):
     active_learning_list = []
-    for i in configs["dataset"]["list"]:
+    for i in data_list:
         data = loadPickle(i)
+        print("load data from ", i, " with size ", len(data))
         active_learning_list.append(data)
 
-    if len(active_learning_list) > 0:
-        import resource
-
-        rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
-        resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
-
-    if "list_size" not in configs["dataset"]:
-        configs["dataset"]["list_size"] = 50
-
     active_learning_datasets = []
-    cnt = 0
     for i in active_learning_list:
         activate_learning_dataset_sub = []
         for j in i:
@@ -301,9 +290,45 @@ def loadBalancedDatasetesm3list(configs):
             cnt += 1
             activate_learning_dataset_sub.append(t)
         active_learning_datasets.append(activate_learning_dataset_sub)
+
+    return active_learning_datasets, cnt
+
+
+def loadBalancedDatasetesm3list(configs):
+    import VirusDataset
+
+    if "list_size" not in configs["dataset"]:
+        configs["dataset"]["list_size"] = 50
+    cnt = 0
+
+    if "list" in configs["dataset"]:
+        train_list, cnt = loadList(configs["dataset"]["list"], cnt)
+        val_list = train_list
+
+    if "train_list" in configs["dataset"]:
+        train_list, cnt = loadList(configs["dataset"]["train_list"], cnt)
+
+    if "val_list" in configs["dataset"]:
+        val_list, cnt = loadList(configs["dataset"]["val_list"], cnt)
+
+    if "train_list_require_mle" not in configs["dataset"]:
+        configs["dataset"]["train_list_require_mle"] = [False for i in train_list]
+
+    if "val_list_require_mle" not in configs["dataset"]:
+        configs["dataset"]["val_list_require_mle"] = [False for i in val_list]
+
+    if len(train_list) > 0 or len(val_list) > 0:
+        import resource
+
+        rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (4096, rlimit[1]))
+
     args, argv = loadBalancedDatasetesm3args(configs)
     ds = VirusDataset.ESM3BalancedDataModule(
-        lists=active_learning_datasets,
+        train_lists=train_list,
+        val_lists=val_list,
+        train_list_require_mle=configs["dataset"]["train_list_require_mle"],
+        val_list_require_mle=configs["dataset"]["val_list_require_mle"],
         list_size=configs["dataset"]["list_size"],
         *args,
         **argv
