@@ -93,7 +93,13 @@ class DataAugmentation:
         if crop > 0:
             t = random.random()
             if t < crop:
-                sampledlen = random.sample(self.croprange, 1)[0]
+                if isinstance(self.croprange[0], list):
+                    # use the first dataset for crop range, therefore make sure the 
+                    cp = self.croprange[0]
+                else:
+                    cp = self.croprange
+                sampledlen = random.choice(cp)
+                # sampledlen = random.sample(cp, 1)[0]
                 sampledlen = int(sampledlen * np.random.uniform(0.8, 1.2))
                 sampledlen = MIN_LENGTH if sampledlen < MIN_LENGTH else sampledlen
                 sampledlen = min(sampledlen, seqlen - 2)

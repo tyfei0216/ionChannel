@@ -219,8 +219,11 @@ def loadBalancedDatasetesm3args(configs):
 
     for i in configs["dataset"]["test"]:
         data = loadPickle(i)
+        len1 = []
         for j in data:
-            lens.append(len(j["ori_seq"]))
+            # lens.append(len(j["ori_seq"]))
+            len1.append(len(j["ori_seq"]))
+        lens.append(len1)
         test_datasets.append(data)
 
     step_points = configs["augmentation"]["step_points"]
