@@ -3,8 +3,8 @@ import random
 
 import numpy as np
 import pytorch_lightning as L
+import tensorboard
 import torch
-from esm.utils.constants import esm3 as C
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.sampler import SubsetRandomSampler
 
@@ -52,7 +52,12 @@ class DataAugmentation:
         assert len(maskp) == len(crop)
         self.tracks = tracks
         if self.tracks == None:
-            self.tracks = {"seq_t": 1, "structure_t": 1, "sasa_t": 1, "second_t": 1}
+            self.tracks = {
+                "seq_t": 1.0,
+                "structure_t": 1.0,
+                "sasa_t": 1.0,
+                "second_t": 1.0,
+            }
         self.step_points = step_points
         self.maskp = maskp
         if maskpp is None:
@@ -94,8 +99,7 @@ class DataAugmentation:
             t = random.random()
             if t < crop:
                 if isinstance(self.croprange[0], list):
-                    # use the first dataset for crop range, therefore make sure the 
-                    cp = self.croprange[0]
+                    cp = self.croprange[self.step_cnt % len(self.croprange)]
                 else:
                     cp = self.croprange
                 sampledlen = random.choice(cp)
@@ -127,6 +131,8 @@ class ESM3BaseDataset(Dataset):
         self.step_cnt = 0
 
     def getToken(self, track, token):
+        from esm.utils.constants import esm3 as C
+
         # assert token in ["start", "end", "mask"]
         match token:
             case "start":
@@ -504,6 +510,48 @@ class ESM3MultiTrackBalancedDataset(ESM3BaseDataset):
         return x1, torch.tensor(labels), x2
 
 
+class ESM2BlancedDataset(ESM3MultiTrackBalancedDataset):
+    def __init__(
+        self,
+        data1,
+        data2,
+        data3,
+        augment=None,
+        pos_neg_sample=None,
+        tracks=["seq_t"],
+        required_labels=[],
+        shuffle=False,
+        update_pnt=True,
+    ):
+        super().__init__(
+            data1,
+            data2,
+            data3,
+            augment,
+            pos_neg_sample,
+            tracks,
+            required_labels,
+            shuffle,
+            update_pnt,
+        )
+
+    # overload
+    def getToken(self, track, token):
+        # assert token in ["start", "end", "mask"]
+        assert track == "seq_t"
+        match token:
+            case "start":
+                return 0
+            case "end":
+                return 2
+            case "mask":
+                return 32
+            case "pad":
+                return 1
+            case _:
+                raise ValueError
+
+
 class ListESM3MultiTrackBalancedDataset(ESM3MultiTrackBalancedDataset):
     def __init__(
         self,
@@ -614,7 +662,7 @@ class ESM3MultiTrackDatasetTEST(ESM3BaseDataset):
 
     def __len__(self):
         if self.trunc is not None:
-            return np.min(self.trunc, len(self.data1))
+            return min(self.trunc, len(self.data1))
         return len(self.data1)
 
     def step(self):
@@ -652,6 +700,7 @@ class ESM3BalancedDataModule(L.LightningDataModule):
         train_list_require_mle=None,
         val_list_require_mle=None,
         list_size=50,
+        use_esm2=False,
     ):
         super().__init__()
         self.value = 0
@@ -696,15 +745,26 @@ class ESM3BalancedDataModule(L.LightningDataModule):
 
         torch.manual_seed(self.seed)
         if train_lists is None:
-            self.train_set = ESM3MultiTrackBalancedDataset(
-                self.traindata1,
-                self.traindata2,
-                self.data3,
-                augment=aug,
-                pos_neg_sample=pos_neg_train,
-                tracks=tracks,
-                required_labels=required_labels,
-            )
+            if use_esm2:
+                self.train_set = ESM2BlancedDataset(
+                    self.traindata1,
+                    self.traindata2,
+                    self.data3,
+                    augment=aug,
+                    pos_neg_sample=pos_neg_train,
+                    tracks=tracks,
+                    required_labels=required_labels,
+                )
+            else:
+                self.train_set = ESM3MultiTrackBalancedDataset(
+                    self.traindata1,
+                    self.traindata2,
+                    self.data3,
+                    augment=aug,
+                    pos_neg_sample=pos_neg_train,
+                    tracks=tracks,
+                    required_labels=required_labels,
+                )
         else:
             self.train_set = ListESM3MultiTrackBalancedDataset(
                 train_lists,
@@ -719,15 +779,26 @@ class ESM3BalancedDataModule(L.LightningDataModule):
                 required_labels=required_labels,
             )
         if val_lists is None:
-            self.val_set = ESM3MultiTrackBalancedDataset(
-                self.valdata1,
-                self.valdata2,
-                self.data3,
-                augment=aug,
-                pos_neg_sample=pos_neg_val,
-                tracks=tracks,
-                required_labels=required_labels,
-            )
+            if use_esm2:
+                self.val_set = ESM2BlancedDataset(
+                    self.valdata1,
+                    self.valdata2,
+                    self.data3,
+                    augment=aug,
+                    pos_neg_sample=pos_neg_val,
+                    tracks=tracks,
+                    required_labels=required_labels,
+                )
+            else:
+                self.val_set = ESM3MultiTrackBalancedDataset(
+                    self.valdata1,
+                    self.valdata2,
+                    self.data3,
+                    augment=aug,
+                    pos_neg_sample=pos_neg_val,
+                    tracks=tracks,
+                    required_labels=required_labels,
+                )
         else:
             self.val_set = ListESM3MultiTrackBalancedDataset(
                 val_lists,

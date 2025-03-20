@@ -140,6 +140,17 @@ def tsnedf(embed, labels):
     return df
 
 
+def pcadf(embed, labels):
+    from sklearn.decomposition import PCA
+
+    q = np.array(embed)
+    q = q.squeeze()
+    pca = PCA(n_components=2)
+    pca_seq = pca.fit_transform(q)
+    df = pd.DataFrame({"x": pca_seq[:, 0], "y": pca_seq[:, 1], "label": labels})
+    return df
+
+
 def umapdf(embed, labels, min_dist=0.3, n_neighbors=15):
     import umap
 

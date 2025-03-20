@@ -18,14 +18,28 @@ import models
 def loadesm2(configs):
     import esm
 
-    model, _ = esm.pretrained.esm2_t12_35M_UR50D()
+    model, _ = esm.pretrained.esm2_t33_650M_UR50D()
+
+    unfixes = configs["pretrain_model"]["unfix_layers"]
+
+    if (
+        "unlock_norm_weights" in configs["pretrain_model"]
+        and configs["pretrain_model"]["unlock_norm_weights"]
+    ):
+        unfixes.append("norm.weight")
+        unfixes.append("norm.bias")
+
     model = models.fixParameters(model, unfix=configs["pretrain_model"]["unfix_layers"])
+
+    q = ["layers." + str(s) + "." for s in configs["pretrain_model"]["add_lora"]]
+
     model = models.addlora(
         model,
-        layers=configs["pretrain_model"]["add_lora"],
+        layers=q,
         ranks=configs["pretrain_model"]["rank"],
         alphas=configs["pretrain_model"]["alpha"],
     )
+
     return model
 
 
@@ -133,10 +147,14 @@ def loadPickle(path):
     return data
 
 
+# the esm3 dataset is compatable with the esm2 version
+# besides esm2 uses the same
 def loadDatasetesm2(configs):
     import VirusDataset
 
-    ds = VirusDataset.SeqdataModule(batch_size=configs["train"]["batch_size"])
+    args, argv = loadBalancedDatasetesm3args(configs)
+    argv["use_esm2"] = True
+    ds = VirusDataset.ESM3BalancedDataModule(*args, **argv)
     return ds
 
 
@@ -219,11 +237,11 @@ def loadBalancedDatasetesm3args(configs):
 
     for i in configs["dataset"]["test"]:
         data = loadPickle(i)
-        len1 = []
+        # len1 = []
         for j in data:
-            # lens.append(len(j["ori_seq"]))
-            len1.append(len(j["ori_seq"]))
-        lens.append(len1)
+            lens.append(len(j["ori_seq"]))
+            # len1.append(len(j["ori_seq"]))
+        # lens.append(len1)
         test_datasets.append(data)
 
     step_points = configs["augmentation"]["step_points"]

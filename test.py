@@ -24,7 +24,7 @@ def parseArgs():
         "--tracks",
         type=str,
         nargs="+",
-        default=["seq_t", "structure_t", "sasa_t", "second_t"],
+        default=["seq_t"],
     )
     parser.add_argument("-n", "--num", type=int, default=None)
     parser.add_argument("-i", "--input", type=str, required=True)
@@ -80,7 +80,7 @@ def run():
     res = trainer.predict(model, dl)
 
     # print(res)
-
+    L.seed_everything(configs["train"]["seed"])
     df, pre = testUtils.resultDataframe(res, configs)
     # if isinstance(res[0], tuple):
     #     res = [r[0] for r in res]
